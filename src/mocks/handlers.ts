@@ -22,10 +22,15 @@ export const handlers = [
   // POST /api/v1/identity/login
   http.post('/api/v1/identity/login', async ({ request }) => {
     const body = (await request.json()) as { username: string; password: string }
-    const { username, password } = body
+    const username = (body.username ?? '').trim()
+    const password = (body.password ?? '').trim()
+    // eslint-disable-next-line no-console
+    console.log('[MSW] /identity/login', { username, lenPwd: password.length })
 
     const u = findUser(username)
     if (!u || u.password !== password) {
+      // eslint-disable-next-line no-console
+      console.log('[MSW] login miss', { found: !!u, gotPwd: password, wantPwd: u?.password })
       return HttpResponse.json({ errorcode: 401, description: '用户名或密码错误' }, { status: 401 })
     }
     if (!u.enabled) {
