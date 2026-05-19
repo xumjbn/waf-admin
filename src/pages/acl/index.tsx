@@ -1,8 +1,11 @@
 import { Card, Icon, KPI, Tag, Button, Toggle } from '@/components/ui'
 import { ALERTS } from '@/mocks/nebula'
 import { useState } from 'react'
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import AlertPolicy from './AlertPolicy'
 
-export default function AlertsPage() {
+function AlertsPage() {
+  const nav = useNavigate()
   const [channels, setChannels] = useState({
     email: true,
     wechat: true,
@@ -22,7 +25,7 @@ export default function AlertsPage() {
           <p>实时安全 + 资源告警 · 多渠道分发 · 工单联动</p>
         </div>
         <div className="actions">
-          <Button variant="ghost">
+          <Button variant="ghost" onClick={() => nav('/acl/policy')}>
             <Icon name="settings" size={13} className="ico" />
             告警策略
           </Button>
@@ -135,5 +138,15 @@ export default function AlertsPage() {
         </Card>
       </div>
     </>
+  )
+}
+
+export default function AclRoutes() {
+  return (
+    <Routes>
+      <Route index element={<AlertsPage />} />
+      <Route path="policy" element={<AlertPolicy />} />
+      <Route path="*" element={<Navigate to="/acl" replace />} />
+    </Routes>
   )
 }

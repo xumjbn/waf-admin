@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Card, Icon, type IconName, Tag, Button, Tabs, Toggle, Sparkline } from '@/components/ui'
 import { Donut } from '@/components/charts'
 import { RULES, type Rule } from '@/mocks/nebula'
@@ -8,6 +8,7 @@ import RuleEdit from './RuleEdit'
 type TabKey = 'modules' | 'rules' | 'acl' | 'bot' | 'api'
 
 function PolicyPage() {
+  const nav = useNavigate()
   const [tab, setTab] = useState<TabKey>('rules')
   const [rules, setRules] = useState<Rule[]>(RULES)
   const dragSrcRef = useRef<string | null>(null)
@@ -44,7 +45,7 @@ function PolicyPage() {
             <Icon name="sparkles" size={13} className="ico" />
             规则市场
           </Button>
-          <Button variant="pri">
+          <Button variant="pri" onClick={() => nav('/policy/rule')}>
             <Icon name="plus" size={13} className="ico" />
             新建规则
           </Button>
@@ -68,6 +69,7 @@ function PolicyPage() {
         <RuleEngine
           rules={rules}
           onMove={moveRule}
+          onEdit={id => nav(`/policy/rule/${id}`)}
           onToggle={id =>
             setRules(r => r.map(x => (x.id === id ? { ...x, enabled: !x.enabled } : x)))
           }
@@ -190,6 +192,7 @@ function RuleEngine({
   rules,
   onMove,
   onToggle,
+  onEdit,
   dragSrcRef,
   dragOver,
   setDragOver,
@@ -197,6 +200,7 @@ function RuleEngine({
   rules: Rule[]
   onMove: (fromId: string, toId: string) => void
   onToggle: (id: string) => void
+  onEdit: (id: string) => void
   dragSrcRef: React.MutableRefObject<string | null>
   dragOver: string | null
   setDragOver: (id: string | null) => void
@@ -386,7 +390,13 @@ function RuleEngine({
               <div className="mono fs-12 t-pink">{r.hits.toLocaleString()}</div>
               <div className="flex items-center gap-2">
                 <Toggle on={r.enabled} onChange={() => onToggle(r.id)} />
-                <span className="tbl-link fs-11">编辑</span>
+                <span
+                  className="tbl-link fs-11"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => onEdit(r.id)}
+                >
+                  编辑
+                </span>
               </div>
             </div>
           ))}
