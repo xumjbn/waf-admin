@@ -1,13 +1,110 @@
-import { useMemo, useState } from 'react'
-import { Card, Icon, Tag, Button, Tabs } from '@/components/ui'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Card, Icon, Tag, Button, Tabs, Toggle } from '@/components/ui'
 import { hexA } from '@/components/charts/canvasUtils'
-import { MOCK_USERS, MOCK_ROLES, MOCK_PROJECTS, findRole, type MockUser, type MockRole } from '@/mocks/identity'
+import {
+  MOCK_USERS,
+  MOCK_ROLES,
+  MOCK_PROJECTS,
+  ALL_MODULES,
+  findRole,
+  type ModuleKey,
+  type MockUser,
+  type MockRole,
+  type MockProject,
+} from '@/mocks/identity'
 
 type TabKey = 'users' | 'roles' | 'projects'
+
+const MODULE_LABEL: Record<ModuleKey, string> = {
+  aggregation: '安全总览',
+  site: '站点接入',
+  policy: '防护配置',
+  instance: '防护实例',
+  log: '攻击日志',
+  acl: '告警中心',
+  report: '报表中心',
+  user: '用户 & 权限',
+  system: '系统设置',
+}
+
+// ---------- Modal 基础组件（自研，避免引入 antd） ----------
+
+function Modal({
+  open,
+  title,
+  width = 520,
+  onClose,
+  footer,
+  children,
+}: {
+  open: boolean
+  title: string
+  width?: number
+  onClose: () => void
+  footer?: ReactNode
+  children: ReactNode
+}) {
+  if (!open) return null
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.45)',
+        backdropFilter: 'blur(4px)',
+        zIndex: 1000,
+        display: 'grid',
+        placeItems: 'center',
+      }}
+      onClick={onClose}
+    >
+      <div
+        className="card"
+        style={{
+          width,
+          maxWidth: '92vw',
+          maxHeight: '88vh',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          boxShadow: '0 24px 80px rgba(0,0,0,.4)',
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="card-hd" style={{ padding: '14px 18px', borderBottom: '1px solid var(--line-2)' }}>
+          <div className="flex items-center justify-between">
+            <div className="fw-700 fs-14">{title}</div>
+            <span style={{ cursor: 'pointer' }} onClick={onClose}>
+              <Icon name="close-x" size={14} />
+            </span>
+          </div>
+        </div>
+        <div style={{ padding: '16px 18px', overflowY: 'auto', flex: 1 }}>{children}</div>
+        {footer && (
+          <div
+            className="flex justify-end gap-2"
+            style={{ padding: '12px 18px', borderTop: '1px solid var(--line-2)' }}
+          >
+            {footer}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------- Page ----------
 
 export default function UsersPage() {
   const [tab, setTab] = useState<TabKey>('users')
   const [users, setUsers] = useState<MockUser[]>(MOCK_USERS)
+  const [roles, setRoles] = useState<MockRole[]>(MOCK_ROLES)
+  const [projects, setProjects] = useState<MockProject[]>(MOCK_PROJECTS)
+
+  const [newUserOpen, setNewUserOpen] = useState(false)
+  const [editRole, setEditRole] = useState<MockRole | null>(null)
+  const [editProject, setEditProject] = useState<MockProject | null>(null)
+  const [editUser, setEditUser] = useState<MockUser | null>(null)
 
   return (
     <>
@@ -20,7 +117,7 @@ export default function UsersPage() {
           <p>多租户 · RBAC · 多项目隔离 · 审计</p>
         </div>
         <div className="actions">
-          <Button variant="pri" onClick={() => window.alert('新增用户向导待接入')}>
+          <Button variant="pri" onClick={() => setNewUserOpen(true)}>
             <Icon name="plus" size={13} className="ico" />
             新增用户
           </Button>
@@ -40,18 +137,72 @@ export default function UsersPage() {
       {tab === 'users' && (
         <UsersList
           users={users}
+          roles={roles}
           onToggle={id =>
             setUsers(prev => prev.map(u => (u.id === id ? { ...u, enabled: !u.enabled } : u)))
           }
+          onEdit={setEditUser}
         />
       )}
-      {tab === 'roles' && <RolesGrid users={users} />}
-      {tab === 'projects' && <ProjectsList />}
+      {tab === 'roles' && <RolesGrid roles={roles} users={users} onEdit={setEditRole} />}
+      {tab === 'projects' && <ProjectsList projects={projects} onEdit={setEditProject} onDelete={id => setProjects(p => p.filter(x => x.id !== id))} />}
+
+      <NewUserModal
+        open={newUserOpen}
+        roles={roles}
+        projects={projects}
+        onClose={() => setNewUserOpen(false)}
+        onSubmit={u => {
+          setUsers(prev => [...prev, u])
+          setNewUserOpen(false)
+        }}
+      />
+
+      <EditUserModal
+        user={editUser}
+        roles={roles}
+        projects={projects}
+        onClose={() => setEditUser(null)}
+        onSubmit={u => {
+          setUsers(prev => prev.map(x => (x.id === u.id ? u : x)))
+          setEditUser(null)
+        }}
+      />
+
+      <EditRoleModal
+        role={editRole}
+        onClose={() => setEditRole(null)}
+        onSubmit={r => {
+          setRoles(prev => prev.map(x => (x.id === r.id ? r : x)))
+          setEditRole(null)
+        }}
+      />
+
+      <EditProjectModal
+        project={editProject}
+        onClose={() => setEditProject(null)}
+        onSubmit={p => {
+          setProjects(prev => prev.map(x => (x.id === p.id ? p : x)))
+          setEditProject(null)
+        }}
+      />
     </>
   )
 }
 
-function UsersList({ users, onToggle }: { users: MockUser[]; onToggle: (id: string) => void }) {
+// ---------- Users ----------
+
+function UsersList({
+  users,
+  roles,
+  onToggle,
+  onEdit,
+}: {
+  users: MockUser[]
+  roles: MockRole[]
+  onToggle: (id: string) => void
+  onEdit: (u: MockUser) => void
+}) {
   return (
     <Card bodyClass="np">
       <table>
@@ -68,13 +219,12 @@ function UsersList({ users, onToggle }: { users: MockUser[]; onToggle: (id: stri
         </thead>
         <tbody>
           {users.map(u => {
-            const role = findRole(u.role_id)
+            const role = roles.find(r => r.id === u.role_id)
             const roleColor = role?.color ?? '#a855f7'
             return (
               <tr key={u.id}>
                 <td className="flex items-center gap-2">
                   <span
-                    className="avatar"
                     style={{
                       width: 28,
                       height: 28,
@@ -109,19 +259,11 @@ function UsersList({ users, onToggle }: { users: MockUser[]; onToggle: (id: stri
                   </Tag>
                 </td>
                 <td className="fs-12">
-                  <span
-                    className="tbl-link"
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => window.alert(`编辑 ${u.username}：表单待接入`)}
-                  >
+                  <span className="tbl-link" style={{ cursor: 'pointer' }} onClick={() => onEdit(u)}>
                     编辑
                   </span>{' '}
                   ·{' '}
-                  <span
-                    className="tbl-link"
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => onToggle(u.id)}
-                  >
+                  <span className="tbl-link" style={{ cursor: 'pointer' }} onClick={() => onToggle(u.id)}>
                     {u.enabled ? '禁用' : '启用'}
                   </span>{' '}
                   ·{' '}
@@ -146,7 +288,182 @@ function UsersList({ users, onToggle }: { users: MockUser[]; onToggle: (id: stri
   )
 }
 
-function RolesGrid({ users }: { users: MockUser[] }) {
+function NewUserModal({
+  open,
+  roles,
+  projects,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean
+  roles: MockRole[]
+  projects: MockProject[]
+  onClose: () => void
+  onSubmit: (u: MockUser) => void
+}) {
+  const [form, setForm] = useState({
+    username: '',
+    email: '',
+    real_name: '',
+    role_id: 'role-operator',
+    project: '默认',
+    password: '',
+  })
+  const upd = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm(f => ({ ...f, [k]: v }))
+
+  const submit = () => {
+    if (!form.username || !form.email) {
+      window.alert('用户名和邮箱必填')
+      return
+    }
+    onSubmit({
+      id: `user-${Date.now()}`,
+      username: form.username,
+      password: form.password || form.username,
+      email: form.email,
+      real_name: form.real_name || form.username,
+      role_id: form.role_id,
+      project: form.project,
+      enabled: true,
+      last_login: '—',
+      avatar: form.username.slice(0, 1).toUpperCase(),
+    })
+    setForm({ username: '', email: '', real_name: '', role_id: 'role-operator', project: '默认', password: '' })
+  }
+
+  return (
+    <Modal
+      open={open}
+      title="新增用户"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="pri" onClick={submit}>创建</Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <div className="field">
+          <label>用户名 *</label>
+          <input className="input" value={form.username} onChange={e => upd('username', e.target.value)} placeholder="lowercase，登录名" />
+        </div>
+        <div className="field">
+          <label>邮箱 *</label>
+          <input className="input" type="email" value={form.email} onChange={e => upd('email', e.target.value)} />
+        </div>
+        <div className="field">
+          <label>真实姓名</label>
+          <input className="input" value={form.real_name} onChange={e => upd('real_name', e.target.value)} placeholder="可选" />
+        </div>
+        <div className="field">
+          <label>角色</label>
+          <select className="select" value={form.role_id} onChange={e => upd('role_id', e.target.value)}>
+            {roles.map(r => (
+              <option key={r.id} value={r.id}>{r.name} — {r.description}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>项目</label>
+          <select className="select" value={form.project} onChange={e => upd('project', e.target.value)}>
+            <option value="全部">全部</option>
+            {projects.map(p => (
+              <option key={p.id} value={p.name}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>初始密码</label>
+          <input className="input" type="text" value={form.password} onChange={e => upd('password', e.target.value)} placeholder="留空则使用用户名" />
+          <div className="muted fs-11 mt-1">首次登录后将强制修改</div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function EditUserModal({
+  user,
+  roles,
+  projects,
+  onClose,
+  onSubmit,
+}: {
+  user: MockUser | null
+  roles: MockRole[]
+  projects: MockProject[]
+  onClose: () => void
+  onSubmit: (u: MockUser) => void
+}) {
+  const [draft, setDraft] = useState<MockUser | null>(null)
+  useEffect(() => {
+    setDraft(user ? { ...user } : null)
+  }, [user])
+  if (!user || !draft) return null
+  const upd = <K extends keyof MockUser>(k: K, v: MockUser[K]) => setDraft(d => (d ? { ...d, [k]: v } : d))
+
+  return (
+    <Modal
+      open={!!user}
+      title={`编辑用户 · ${user.username}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="pri" onClick={() => onSubmit(draft)}>保存</Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <div className="field">
+          <label>邮箱</label>
+          <input className="input" value={draft.email} onChange={e => upd('email', e.target.value)} />
+        </div>
+        <div className="field">
+          <label>真实姓名</label>
+          <input className="input" value={draft.real_name} onChange={e => upd('real_name', e.target.value)} />
+        </div>
+        <div className="field">
+          <label>角色</label>
+          <select className="select" value={draft.role_id} onChange={e => upd('role_id', e.target.value)}>
+            {roles.map(r => (
+              <option key={r.id} value={r.id}>{r.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>项目</label>
+          <select className="select" value={draft.project} onChange={e => upd('project', e.target.value)}>
+            <option value="全部">全部</option>
+            {projects.map(p => (
+              <option key={p.id} value={p.name}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>账号状态</label>
+          <div className="flex items-center gap-2">
+            <Toggle on={draft.enabled} onChange={v => upd('enabled', v)} />
+            <span className="muted fs-12">{draft.enabled ? '已启用 · 允许登录' : '已禁用 · 拒绝登录'}</span>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ---------- Roles ----------
+
+function RolesGrid({
+  roles,
+  users,
+  onEdit,
+}: {
+  roles: MockRole[]
+  users: MockUser[]
+  onEdit: (r: MockRole) => void
+}) {
   const userCount = useMemo(() => {
     return users.reduce<Record<string, number>>((acc, u) => {
       acc[u.role_id] = (acc[u.role_id] ?? 0) + 1
@@ -156,22 +473,20 @@ function RolesGrid({ users }: { users: MockUser[] }) {
 
   return (
     <div className="row r-3 gap-3">
-      {MOCK_ROLES.map(r => (
-        <RoleCard key={r.id} role={r} userCount={userCount[r.id] ?? 0} />
+      {roles.map(r => (
+        <RoleCard key={r.id} role={r} userCount={userCount[r.id] ?? 0} onEdit={() => onEdit(r)} />
       ))}
     </div>
   )
 }
 
-function RoleCard({ role, userCount }: { role: MockRole; userCount: number }) {
+function RoleCard({ role, userCount, onEdit }: { role: MockRole; userCount: number; onEdit: () => void }) {
   const modulesText =
     role.modules === '*'
-      ? role.readonly
-        ? '所有页面（只读）'
-        : '全部资源 · 全部操作'
+      ? role.readonly ? '所有页面（只读）' : '全部资源 · 全部操作'
       : role.modules.length === 0
         ? '细粒度（未配置）'
-        : role.modules.join(' · ')
+        : role.modules.map(m => MODULE_LABEL[m as ModuleKey] ?? m).join(' · ')
 
   return (
     <div className="card" style={{ padding: 18 }}>
@@ -198,11 +513,7 @@ function RoleCard({ role, userCount }: { role: MockRole; userCount: number }) {
       <div className="fs-12 mb-2">{role.description}</div>
       <div className="muted fs-11 mb-3" style={{ minHeight: 28 }}>{modulesText}</div>
       <div className="flex gap-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => window.alert(`编辑角色「${role.name}」权限：编辑器待接入`)}
-        >
+        <Button variant="ghost" size="sm" onClick={onEdit}>
           <Icon name="edit" size={11} className="ico" />
           编辑权限
         </Button>
@@ -211,7 +522,115 @@ function RoleCard({ role, userCount }: { role: MockRole; userCount: number }) {
   )
 }
 
-function ProjectsList() {
+function EditRoleModal({
+  role,
+  onClose,
+  onSubmit,
+}: {
+  role: MockRole | null
+  onClose: () => void
+  onSubmit: (r: MockRole) => void
+}) {
+  const [draft, setDraft] = useState<MockRole | null>(null)
+  useEffect(() => {
+    setDraft(role ? { ...role } : null)
+  }, [role])
+  if (!role || !draft) return null
+
+  const isAll = draft.modules === '*'
+  const moduleSet = new Set<ModuleKey>(Array.isArray(draft.modules) ? (draft.modules as ModuleKey[]) : [])
+
+  const setAll = (v: boolean) => {
+    setDraft(d => (d ? { ...d, modules: v ? '*' : [] } : d))
+  }
+  const toggleModule = (m: ModuleKey) => {
+    if (isAll) return
+    setDraft(d => {
+      if (!d) return d
+      const next = new Set(moduleSet)
+      if (next.has(m)) next.delete(m); else next.add(m)
+      return { ...d, modules: Array.from(next) }
+    })
+  }
+
+  return (
+    <Modal
+      open={!!role}
+      title={`编辑权限 · ${role.name}`}
+      width={620}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="pri" onClick={() => onSubmit(draft)}>保存</Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <div className="field">
+          <label>角色名称</label>
+          <input className="input" value={draft.name} onChange={e => setDraft(d => (d ? { ...d, name: e.target.value } : d))} />
+        </div>
+        <div className="field">
+          <label>描述</label>
+          <input className="input" value={draft.description} onChange={e => setDraft(d => (d ? { ...d, description: e.target.value } : d))} />
+        </div>
+        <div className="field">
+          <label>访问范围</label>
+          <div className="flex items-center gap-2 mb-2">
+            <Toggle on={isAll} onChange={setAll} />
+            <span className="fs-12">全部模块</span>
+            <span className="muted fs-11">（开启后忽略下方勾选）</span>
+          </div>
+          <div
+            className="row r-3 gap-2"
+            style={{ opacity: isAll ? 0.4 : 1, pointerEvents: isAll ? 'none' : 'auto' }}
+          >
+            {ALL_MODULES.map(m => {
+              const on = moduleSet.has(m)
+              return (
+                <label
+                  key={m}
+                  className="flex items-center gap-2"
+                  style={{
+                    padding: '8px 10px',
+                    border: '1px solid var(--line-2)',
+                    borderRadius: 8,
+                    background: on ? 'rgba(168,85,247,.08)' : 'transparent',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input type="checkbox" checked={on} onChange={() => toggleModule(m)} />
+                  <span className="fs-12">{MODULE_LABEL[m]}</span>
+                  <span className="muted fs-11 mono" style={{ marginLeft: 'auto' }}>{m}</span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+        <div className="field">
+          <label>只读模式</label>
+          <div className="flex items-center gap-2">
+            <Toggle on={!!draft.readonly} onChange={v => setDraft(d => (d ? { ...d, readonly: v } : d))} />
+            <span className="muted fs-12">开启后允许查看但禁止编辑/删除</span>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ---------- Projects ----------
+
+function ProjectsList({
+  projects,
+  onEdit,
+  onDelete,
+}: {
+  projects: MockProject[]
+  onEdit: (p: MockProject) => void
+  onDelete: (id: string) => void
+}) {
   return (
     <Card bodyClass="np">
       <table>
@@ -227,7 +646,7 @@ function ProjectsList() {
           </tr>
         </thead>
         <tbody>
-          {MOCK_PROJECTS.map(p => (
+          {projects.map(p => (
             <tr key={p.id}>
               <td className="fw-700">{p.name}</td>
               <td className="muted fs-12">{p.description}</td>
@@ -236,11 +655,7 @@ function ProjectsList() {
               <td className="mono">{p.members}</td>
               <td>{p.created_at}</td>
               <td>
-                <span
-                  className="tbl-link"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => window.alert(`编辑项目「${p.name}」`)}
-                >
+                <span className="tbl-link" style={{ cursor: 'pointer' }} onClick={() => onEdit(p)}>
                   编辑
                 </span>
                 {p.id !== 'proj-default' && (
@@ -249,7 +664,9 @@ function ProjectsList() {
                     <span
                       className="tbl-link"
                       style={{ cursor: 'pointer' }}
-                      onClick={() => window.confirm(`确认删除项目「${p.name}」？`)}
+                      onClick={() => {
+                        if (window.confirm(`确认删除项目「${p.name}」？此操作不可恢复。`)) onDelete(p.id)
+                      }}
                     >
                       删除
                     </span>
@@ -261,5 +678,61 @@ function ProjectsList() {
         </tbody>
       </table>
     </Card>
+  )
+}
+
+function EditProjectModal({
+  project,
+  onClose,
+  onSubmit,
+}: {
+  project: MockProject | null
+  onClose: () => void
+  onSubmit: (p: MockProject) => void
+}) {
+  const [draft, setDraft] = useState<MockProject | null>(null)
+  useEffect(() => {
+    setDraft(project ? { ...project } : null)
+  }, [project])
+  if (!project || !draft) return null
+  const upd = <K extends keyof MockProject>(k: K, v: MockProject[K]) => setDraft(d => (d ? { ...d, [k]: v } : d))
+
+  return (
+    <Modal
+      open={!!project}
+      title={`编辑项目 · ${project.name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="pri" onClick={() => onSubmit(draft)}>保存</Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <div className="field">
+          <label>项目名称</label>
+          <input className="input" value={draft.name} onChange={e => upd('name', e.target.value)} />
+        </div>
+        <div className="field">
+          <label>描述</label>
+          <input className="input" value={draft.description} onChange={e => upd('description', e.target.value)} />
+        </div>
+        <div className="row r-3 gap-3">
+          <div className="field">
+            <label>站点数</label>
+            <input type="number" className="input" value={draft.sites} onChange={e => upd('sites', Number(e.target.value) || 0)} />
+          </div>
+          <div className="field">
+            <label>实例数</label>
+            <input type="number" className="input" value={draft.instances} onChange={e => upd('instances', Number(e.target.value) || 0)} />
+          </div>
+          <div className="field">
+            <label>成员数</label>
+            <input type="number" className="input" value={draft.members} onChange={e => upd('members', Number(e.target.value) || 0)} />
+          </div>
+        </div>
+      </div>
+    </Modal>
   )
 }
