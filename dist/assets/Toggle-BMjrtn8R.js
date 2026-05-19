@@ -1,0 +1,1 @@
+import{j as a}from"./vendor-react-CUtRUeFw.js";function s({on:t,onChange:e,label:o}){return a.jsx("button",{type:"button",className:`toggle${t?" on":""}`,role:"switch","aria-checked":t,"aria-label":o,onClick:()=>e(!t)})}export{s as T};
