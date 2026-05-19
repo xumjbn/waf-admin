@@ -1,0 +1,30 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- 简化版 Logo - 适合小尺寸显示 -->
+  <defs>
+    <linearGradient id="simpleGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1890ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#096dd9;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- 盾牌轮廓 -->
+  <path d="M 100 30 L 150 55 L 150 115 Q 150 150 100 170 Q 50 150 50 115 L 50 55 Z"
+        fill="url(#simpleGradient)"
+        stroke="#0050b3"
+        stroke-width="4"/>
+
+  <!-- WAF 字母标识 -->
+  <text x="100" y="120"
+        font-family="Arial, sans-serif"
+        font-size="48"
+        font-weight="bold"
+        fill="white"
+        text-anchor="middle">
+    WAF
+  </text>
+
+  <!-- 防护指示器 -->
+  <circle cx="100" cy="60" r="8" fill="#52c41a">
+    <animate attributeName="opacity" dur="1.5s" repeatCount="indefinite" values="1;0.3;1"/>
+  </circle>
+</svg>

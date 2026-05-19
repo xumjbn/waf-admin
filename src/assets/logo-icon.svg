@@ -1,0 +1,21 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <!-- Favicon 版本 - 64x64 -->
+  <defs>
+    <linearGradient id="iconGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1890ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#096dd9;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- 盾牌 -->
+  <path d="M 32 6 L 54 16 L 54 38 Q 54 50 32 58 Q 10 50 10 38 L 10 16 Z"
+        fill="url(#iconGradient)"/>
+
+  <!-- 简化的 W 字母 -->
+  <path d="M 18 22 L 22 38 L 28 26 L 32 38 L 36 26 L 42 38 L 46 22"
+        fill="none"
+        stroke="white"
+        stroke-width="3"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+</svg>

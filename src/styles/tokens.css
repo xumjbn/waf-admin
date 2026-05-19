@@ -1,0 +1,100 @@
+/* ========================================================
+   NebulaWAF — Design tokens
+   Holographic dark theme, light fallback.
+   ======================================================== */
+
+:root {
+  --brand-1: #a855f7;
+  --brand-2: #ec4899;
+  --brand-3: #f59e0b;
+  --brand-c: #22d3ee;
+  --grad-brand: linear-gradient(135deg, #a855f7 0%, #ec4899 60%, #f59e0b 100%);
+  --grad-soft: linear-gradient(
+    135deg,
+    rgba(168, 85, 247, 0.18),
+    rgba(236, 72, 153, 0.12) 60%,
+    rgba(245, 158, 11, 0.1)
+  );
+  --grad-line: linear-gradient(
+    90deg,
+    transparent,
+    rgba(168, 85, 247, 0.5),
+    rgba(236, 72, 153, 0.5),
+    transparent
+  );
+
+  --ok: #10b981;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --info: #22d3ee;
+
+  /* Dark — default */
+  --bg-0: #07060d;
+  --bg-1: #0d0a18;
+  --bg-2: #141020;
+  --bg-3: #1a1530;
+  --line: rgba(168, 85, 247, 0.14);
+  --line-2: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(168, 85, 247, 0.34);
+  --text-0: #f3eaff;
+  --text-1: #cdc2e0;
+  --text-2: #8e84a3;
+  --text-3: #5d556e;
+  --text-mute: #4a425a;
+  --code-bg: rgba(168, 85, 247, 0.08);
+  --shadow-glow: 0 0 40px -10px rgba(168, 85, 247, 0.45);
+  --shadow-pop: 0 12px 32px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--line);
+
+  /* Spacing */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --pad-card: 18px 20px;
+  --pad-cell: 12px 16px;
+  --radius-1: 6px;
+  --radius-2: 10px;
+  --radius-3: 14px;
+  --radius-4: 18px;
+
+  --sidebar-w: 240px;
+  --sidebar-w-collapsed: 64px;
+  --header-h: 56px;
+}
+
+[data-density='compact'] {
+  --sp-3: 8px;
+  --sp-4: 12px;
+  --sp-5: 14px;
+  --sp-6: 18px;
+  --pad-card: 12px 14px;
+  --pad-cell: 8px 12px;
+}
+
+/* Light fallback — applied when data-theme=light on body */
+body[data-theme='light'] {
+  --bg-0: #f6f4fb;
+  --bg-1: #ffffff;
+  --bg-2: #ffffff;
+  --bg-3: #f3eefb;
+  --line: rgba(91, 33, 182, 0.12);
+  --line-2: rgba(15, 23, 42, 0.06);
+  --line-strong: rgba(91, 33, 182, 0.28);
+  --text-0: #16101f;
+  --text-1: #3b3052;
+  --text-2: #6e6685;
+  --text-3: #948fa5;
+  --text-mute: #b9b3c7;
+  --code-bg: rgba(168, 85, 247, 0.1);
+  --shadow-glow: 0 16px 36px -16px rgba(168, 85, 247, 0.3);
+  --shadow-pop: 0 8px 28px -10px rgba(99, 55, 138, 0.18), 0 0 0 1px var(--line);
+  --grad-soft: linear-gradient(
+    135deg,
+    rgba(168, 85, 247, 0.1),
+    rgba(236, 72, 153, 0.06) 60%,
+    rgba(245, 158, 11, 0.05)
+  );
+}
