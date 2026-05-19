@@ -2,17 +2,26 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Card, Icon, Tag, Button, Tabs, Toggle } from '@/components/ui'
 import { hexA } from '@/components/charts/canvasUtils'
 import {
-  MOCK_USERS,
-  MOCK_ROLES,
-  MOCK_PROJECTS,
   ALL_MODULES,
   type ModuleKey,
   type MockUser,
   type MockRole,
   type MockProject,
 } from '@/mocks/identity'
+import * as identityApi from '@/api/identity'
 
 type TabKey = 'users' | 'roles' | 'projects'
+
+function reportApiError(err: unknown) {
+  // eslint-disable-next-line no-console
+  console.error('[identity api]', err)
+  const msg =
+    (err as { response?: { data?: { description?: string; error?: string } } })?.response?.data?.description ??
+    (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+    (err as Error)?.message ??
+    String(err)
+  window.alert(`接口调用失败: ${msg}`)
+}
 
 const MODULE_LABEL: Record<ModuleKey, string> = {
   aggregation: '安全总览',
@@ -96,15 +105,26 @@ function Modal({
 
 export default function UsersPage() {
   const [tab, setTab] = useState<TabKey>('users')
-  const [users, setUsers] = useState<MockUser[]>(MOCK_USERS)
-  const [roles, setRoles] = useState<MockRole[]>(MOCK_ROLES)
-  const [projects, setProjects] = useState<MockProject[]>(MOCK_PROJECTS)
+  const [users, setUsers] = useState<MockUser[]>([])
+  const [roles, setRoles] = useState<MockRole[]>([])
+  const [projects, setProjects] = useState<MockProject[]>([])
 
   const [newUserOpen, setNewUserOpen] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [editRole, setEditRole] = useState<MockRole | null>(null)
   const [editProject, setEditProject] = useState<MockProject | null>(null)
   const [editUser, setEditUser] = useState<MockUser | null>(null)
+
+  const reloadUsers = () => identityApi.listUsers().then(setUsers).catch(reportApiError)
+  const reloadRoles = () => identityApi.listRoles().then(setRoles).catch(reportApiError)
+  const reloadProjects = () => identityApi.listProjects().then(setProjects).catch(reportApiError)
+
+  useEffect(() => {
+    reloadUsers()
+    reloadRoles()
+    reloadProjects()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <>
@@ -145,15 +165,26 @@ export default function UsersPage() {
         <UsersList
           users={users}
           roles={roles}
-          onToggle={id =>
-            setUsers(prev => prev.map(u => (u.id === id ? { ...u, enabled: !u.enabled } : u)))
-          }
+          onToggle={id => {
+            const u = users.find(x => x.id === id)
+            if (!u) return
+            identityApi
+              .updateUser(id, { enabled: !u.enabled })
+              .then(reloadUsers)
+              .catch(reportApiError)
+          }}
           onEdit={setEditUser}
-          onDelete={id => setUsers(prev => prev.filter(u => u.id !== id))}
+          onDelete={id => identityApi.deleteUser(id).then(reloadUsers).catch(reportApiError)}
         />
       )}
       {tab === 'roles' && <RolesGrid roles={roles} users={users} onEdit={setEditRole} />}
-      {tab === 'projects' && <ProjectsList projects={projects} onEdit={setEditProject} onDelete={id => setProjects(p => p.filter(x => x.id !== id))} />}
+      {tab === 'projects' && (
+        <ProjectsList
+          projects={projects}
+          onEdit={setEditProject}
+          onDelete={id => identityApi.deleteProject(id).then(reloadProjects).catch(reportApiError)}
+        />
+      )}
 
       <NewUserModal
         open={newUserOpen}
@@ -161,8 +192,20 @@ export default function UsersPage() {
         projects={projects}
         onClose={() => setNewUserOpen(false)}
         onSubmit={u => {
-          setUsers(prev => [...prev, u])
-          setNewUserOpen(false)
+          identityApi
+            .createUser({
+              username: u.username,
+              email: u.email,
+              real_name: u.real_name,
+              password: u.password,
+              role_id: u.role_id,
+              project: u.project,
+            })
+            .then(() => {
+              setNewUserOpen(false)
+              reloadUsers()
+            })
+            .catch(reportApiError)
         }}
       />
 
@@ -172,8 +215,18 @@ export default function UsersPage() {
         projects={projects}
         onClose={() => setEditUser(null)}
         onSubmit={u => {
-          setUsers(prev => prev.map(x => (x.id === u.id ? u : x)))
-          setEditUser(null)
+          identityApi
+            .updateUser(u.id, {
+              email: u.email,
+              real_name: u.real_name,
+              enabled: u.enabled,
+              role_id: u.role_id,
+            })
+            .then(() => {
+              setEditUser(null)
+              reloadUsers()
+            })
+            .catch(reportApiError)
         }}
       />
 
@@ -181,8 +234,13 @@ export default function UsersPage() {
         role={editRole}
         onClose={() => setEditRole(null)}
         onSubmit={r => {
-          setRoles(prev => prev.map(x => (x.id === r.id ? r : x)))
-          setEditRole(null)
+          identityApi
+            .updateRole(r.id, r)
+            .then(() => {
+              setEditRole(null)
+              reloadRoles()
+            })
+            .catch(reportApiError)
         }}
       />
 
@@ -190,8 +248,13 @@ export default function UsersPage() {
         project={editProject}
         onClose={() => setEditProject(null)}
         onSubmit={p => {
-          setProjects(prev => prev.map(x => (x.id === p.id ? p : x)))
-          setEditProject(null)
+          identityApi
+            .updateProject(p.id, { name: p.name, description: p.description })
+            .then(() => {
+              setEditProject(null)
+              reloadProjects()
+            })
+            .catch(reportApiError)
         }}
       />
 
@@ -199,8 +262,13 @@ export default function UsersPage() {
         open={newProjectOpen}
         onClose={() => setNewProjectOpen(false)}
         onSubmit={p => {
-          setProjects(prev => [...prev, p])
-          setNewProjectOpen(false)
+          identityApi
+            .createProject({ name: p.name, description: p.description })
+            .then(() => {
+              setNewProjectOpen(false)
+              reloadProjects()
+            })
+            .catch(reportApiError)
         }}
       />
     </>
@@ -290,9 +358,11 @@ function UsersList({
                     className="tbl-link"
                     style={{ cursor: 'pointer' }}
                     onClick={() => {
-                      if (window.confirm(`重置 ${u.username} 的密码？\n\n新密码将随机生成并发送到 ${u.email}`)) {
-                        window.alert('已重置 · 临时密码：Temp-' + Math.random().toString(36).slice(2, 8))
-                      }
+                      if (!window.confirm(`重置 ${u.username} 的密码？\n\n新密码将随机生成并发送到 ${u.email}`)) return
+                      identityApi
+                        .resetUserPassword(u.id)
+                        .then(plain => window.alert(`已重置 · 临时密码：${plain}`))
+                        .catch(reportApiError)
                     }}
                   >
                     重置密码
