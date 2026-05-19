@@ -1,18 +1,55 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Card, Icon, Tag, Button, Tabs } from '@/components/ui'
-import { mkAttack, type AttackEvent } from '@/mocks/nebula'
+import { type AttackEvent } from '@/mocks/nebula'
+import * as logApi from '@/api/live/log'
 
 type FilterTab = 'all' | 'block' | 'chal' | 'log'
 
+const EMPTY_EVENT: AttackEvent = {
+  id: '',
+  t: '—',
+  ts: 0,
+  ip: '—',
+  region: '—',
+  country: '—',
+  lat: 0,
+  lng: 0,
+  site: '—',
+  domain: '—',
+  type: '—',
+  typeLabel: '—',
+  typeColor: '#8e84a3',
+  risk: '中',
+  action: 'logged',
+  method: 'GET',
+  uri: '—',
+  payload: '',
+  ruleId: '—',
+  ua: '—',
+}
+
 export default function LogsPage() {
-  const allEvents = useMemo(() => Array.from({ length: 40 }, () => mkAttack()), [])
+  const [allEvents, setAllEvents] = useState<AttackEvent[]>([])
   const [ipFilter, setIpFilter] = useState<string | null>(null)
   const events = useMemo(
     () => (ipFilter ? allEvents.filter(e => e.ip === ipFilter) : allEvents),
     [allEvents, ipFilter],
   )
-  const [selected, setSelected] = useState<AttackEvent>(allEvents[0])
+  const [selected, setSelected] = useState<AttackEvent>(EMPTY_EVENT)
   const [tab, setTab] = useState<FilterTab>('all')
+
+  useEffect(() => {
+    logApi
+      .listAttackLogs({ pageSize: 100 })
+      .then(({ items }) => {
+        setAllEvents(items)
+        if (items.length > 0) setSelected(prev => (prev.id ? prev : items[0]))
+      })
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[log api]', err)
+      })
+  }, [])
 
   return (
     <>
