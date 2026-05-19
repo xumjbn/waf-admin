@@ -101,6 +101,7 @@ export default function UsersPage() {
   const [projects, setProjects] = useState<MockProject[]>(MOCK_PROJECTS)
 
   const [newUserOpen, setNewUserOpen] = useState(false)
+  const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [editRole, setEditRole] = useState<MockRole | null>(null)
   const [editProject, setEditProject] = useState<MockProject | null>(null)
   const [editUser, setEditUser] = useState<MockUser | null>(null)
@@ -116,10 +117,17 @@ export default function UsersPage() {
           <p>多租户 · RBAC · 多项目隔离 · 审计</p>
         </div>
         <div className="actions">
-          <Button variant="pri" onClick={() => setNewUserOpen(true)}>
-            <Icon name="plus" size={13} className="ico" />
-            新增用户
-          </Button>
+          {tab === 'projects' ? (
+            <Button variant="pri" onClick={() => setNewProjectOpen(true)}>
+              <Icon name="plus" size={13} className="ico" />
+              新增项目
+            </Button>
+          ) : (
+            <Button variant="pri" onClick={() => setNewUserOpen(true)}>
+              <Icon name="plus" size={13} className="ico" />
+              新增用户
+            </Button>
+          )}
         </div>
       </div>
 
@@ -141,6 +149,7 @@ export default function UsersPage() {
             setUsers(prev => prev.map(u => (u.id === id ? { ...u, enabled: !u.enabled } : u)))
           }
           onEdit={setEditUser}
+          onDelete={id => setUsers(prev => prev.filter(u => u.id !== id))}
         />
       )}
       {tab === 'roles' && <RolesGrid roles={roles} users={users} onEdit={setEditRole} />}
@@ -185,6 +194,15 @@ export default function UsersPage() {
           setEditProject(null)
         }}
       />
+
+      <NewProjectModal
+        open={newProjectOpen}
+        onClose={() => setNewProjectOpen(false)}
+        onSubmit={p => {
+          setProjects(prev => [...prev, p])
+          setNewProjectOpen(false)
+        }}
+      />
     </>
   )
 }
@@ -196,11 +214,13 @@ function UsersList({
   roles,
   onToggle,
   onEdit,
+  onDelete,
 }: {
   users: MockUser[]
   roles: MockRole[]
   onToggle: (id: string) => void
   onEdit: (u: MockUser) => void
+  onDelete: (id: string) => void
 }) {
   return (
     <Card bodyClass="np">
@@ -277,6 +297,22 @@ function UsersList({
                   >
                     重置密码
                   </span>
+                  {u.username !== 'admin' && (
+                    <>
+                      {' '}·{' '}
+                      <span
+                        className="tbl-link t-danger"
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => {
+                          if (window.confirm(`确认删除用户 ${u.username}？\n此操作不可恢复。`)) {
+                            onDelete(u.id)
+                          }
+                        }}
+                      >
+                        删除
+                      </span>
+                    </>
+                  )}
                 </td>
               </tr>
             )
@@ -677,6 +713,77 @@ function ProjectsList({
         </tbody>
       </table>
     </Card>
+  )
+}
+
+function NewProjectModal({
+  open,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean
+  onClose: () => void
+  onSubmit: (p: MockProject) => void
+}) {
+  const [form, setForm] = useState({
+    name: '',
+    description: '',
+  })
+  const upd = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm(f => ({ ...f, [k]: v }))
+
+  const submit = () => {
+    if (!form.name.trim()) {
+      window.alert('项目名称必填')
+      return
+    }
+    onSubmit({
+      id: `proj-${Date.now()}`,
+      name: form.name.trim(),
+      description: form.description.trim(),
+      sites: 0,
+      instances: 0,
+      members: 0,
+      created_at: new Date().toISOString().slice(0, 10),
+    })
+    setForm({ name: '', description: '' })
+  }
+
+  return (
+    <Modal
+      open={open}
+      title="新增项目"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="pri" onClick={submit}>创建</Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <div className="field">
+          <label>项目名称 *</label>
+          <input
+            className="input"
+            value={form.name}
+            onChange={e => upd('name', e.target.value)}
+            placeholder="如：项目 C — 风控"
+          />
+        </div>
+        <div className="field">
+          <label>描述</label>
+          <input
+            className="input"
+            value={form.description}
+            onChange={e => upd('description', e.target.value)}
+            placeholder="可选"
+          />
+        </div>
+        <div className="muted fs-11">
+          创建后可在项目列表里继续编辑站点/实例/成员数等指标。
+        </div>
+      </div>
+    </Modal>
   )
 }
 
