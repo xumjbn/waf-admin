@@ -1,17 +1,44 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Card, Icon, KPI, Tag, Bar, Button, Tabs } from '@/components/ui'
 import { AreaChart } from '@/components/charts'
-import { SITES, CLUSTERS, type Site } from '@/mocks/nebula'
+import { CLUSTERS, type Site } from '@/mocks/nebula'
+import * as siteApi from '@/api/live/site'
 import SiteWizard from './SiteWizard'
 import SiteEdit from './SiteEdit'
 
 type ViewMode = 'topology' | 'list'
 
+const PLACEHOLDER_SITE: Site = {
+  id: '',
+  name: '加载中…',
+  domain: '',
+  proto: '—',
+  upstream: '—',
+  instance: '—',
+  rps: 0,
+  blockedRate: 0,
+  state: 'observe',
+}
+
 function SitesPage() {
   const navigate = useNavigate()
   const [view, setView] = useState<ViewMode>('topology')
-  const [selected, setSelected] = useState<Site>(SITES[0])
+  const [sites, setSites] = useState<Site[]>([])
+  const [selected, setSelected] = useState<Site>(PLACEHOLDER_SITE)
+
+  useEffect(() => {
+    siteApi
+      .listSites()
+      .then(list => {
+        setSites(list)
+        if (list.length > 0) setSelected(prev => (prev.id ? prev : list[0]))
+      })
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[site api]', err)
+      })
+  }, [])
 
   return (
     <>
@@ -73,25 +100,27 @@ function SitesPage() {
             }
             bodyClass="np"
           >
-            <TopologyView selected={selected} onSelect={setSelected} />
+            <TopologyView sites={sites} selected={selected} onSelect={setSelected} />
           </Card>
           <SiteDetailPanel site={selected} />
         </div>
       ) : (
-        <SiteListView onPick={setSelected} />
+        <SiteListView sites={sites} onPick={setSelected} />
       )}
     </>
   )
 }
 
 function TopologyView({
+  sites: allSites,
   selected,
   onSelect,
 }: {
+  sites: Site[]
   selected: Site
   onSelect: (s: Site) => void
 }) {
-  const sites = SITES.slice(0, 6)
+  const sites = allSites.slice(0, 6)
 
   return (
     <div style={{ position: 'relative', height: 560, overflow: 'hidden' }}>
@@ -411,13 +440,13 @@ function Stat({ label, value, hint, tone, mono, small }: StatProps) {
   )
 }
 
-function SiteListView({ onPick }: { onPick: (s: Site) => void }) {
+function SiteListView({ sites, onPick }: { sites: Site[]; onPick: (s: Site) => void }) {
   const navigate = useNavigate()
   return (
     <Card
       title="站点列表"
       ico="sites"
-      meta={`${SITES.length} 个`}
+      meta={`${sites.length} 个`}
       actions={
         <div className="flex gap-2">
           <input className="input" placeholder="搜索站点 / 域名" />
@@ -447,7 +476,7 @@ function SiteListView({ onPick }: { onPick: (s: Site) => void }) {
             </tr>
           </thead>
           <tbody>
-            {SITES.map(s => (
+            {sites.map(s => (
               <tr key={s.id}>
                 <td>
                   <span className="tbl-link" onClick={() => onPick(s)}>
