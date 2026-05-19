@@ -14,17 +14,7 @@ import { settingHandlers } from './setting-handlers'
 import { nodeHandlers } from './node-handlers'
 import { userHandlers } from './user-handlers'
 import { notificationHandlers } from './notification-handlers'
-
-// 模拟用户数据
-const MOCK_USERS: Record<string, string> = {
-  admin: 'admin',
-  auditor: 'auditor',
-}
-
-const MOCK_ROLES: Record<string, Array<{ id: string; name: string }>> = {
-  admin: [{ id: 'r1', name: 'service_admin' }],
-  auditor: [{ id: 'r2', name: 'service_auditor' }],
-}
+import { findUser, findRole, rolesForUser, MOCK_USERS, MOCK_ROLES, MOCK_PROJECTS } from './identity'
 
 export const handlers = [
   // === 认证 (新版 identity API) ===
@@ -34,8 +24,12 @@ export const handlers = [
     const body = (await request.json()) as { username: string; password: string }
     const { username, password } = body
 
-    if (MOCK_USERS[username] !== password) {
+    const u = findUser(username)
+    if (!u || u.password !== password) {
       return HttpResponse.json({ errorcode: 401, description: '用户名或密码错误' }, { status: 401 })
+    }
+    if (!u.enabled) {
+      return HttpResponse.json({ errorcode: 403, description: '该账号已被禁用' }, { status: 403 })
     }
 
     return HttpResponse.json({
@@ -50,17 +44,62 @@ export const handlers = [
     const auth = request.headers.get('Authorization') ?? ''
     const tokenMatch = auth.match(/mock-access-(\w+)-/)
     const username = tokenMatch?.[1] ?? 'admin'
+    const u = findUser(username)
+
+    if (!u) {
+      return HttpResponse.json({ errorcode: 401, description: 'invalid token' }, { status: 401 })
+    }
 
     return HttpResponse.json({
-      id: `user-${username}`,
-      username,
-      real_name: username === 'admin' ? '管理员' : '审计员',
-      roles: MOCK_ROLES[username] ?? [{ id: 'r1', name: 'service_admin' }],
+      id: u.id,
+      username: u.username,
+      real_name: u.real_name,
+      email: u.email,
+      project: u.project,
+      roles: rolesForUser(username),
     })
   }),
 
   // POST /api/v1/identity/logout
   http.post('/api/v1/identity/logout', () => HttpResponse.json({ message: 'ok' })),
+
+  // GET /api/v1/identity/users  —— 用户中心列表
+  http.get('/api/v1/identity/users', () => {
+    return HttpResponse.json({
+      items: MOCK_USERS.map(u => {
+        const r = findRole(u.role_id)
+        return {
+          id: u.id,
+          username: u.username,
+          email: u.email,
+          real_name: u.real_name,
+          enabled: u.enabled,
+          project: u.project,
+          last_login: u.last_login,
+          avatar: u.avatar,
+          role: r ? { id: r.id, key: r.key, name: r.name, color: r.color } : null,
+        }
+      }),
+      total: MOCK_USERS.length,
+    })
+  }),
+
+  // GET /api/v1/identity/roles  —— 角色列表
+  http.get('/api/v1/identity/roles', () => {
+    const counts = MOCK_USERS.reduce<Record<string, number>>((acc, u) => {
+      acc[u.role_id] = (acc[u.role_id] ?? 0) + 1
+      return acc
+    }, {})
+    return HttpResponse.json({
+      items: MOCK_ROLES.map(r => ({ ...r, user_count: counts[r.id] ?? 0 })),
+      total: MOCK_ROLES.length,
+    })
+  }),
+
+  // GET /api/v1/identity/projects  —— 项目列表
+  http.get('/api/v1/identity/projects', () => {
+    return HttpResponse.json({ items: MOCK_PROJECTS, total: MOCK_PROJECTS.length })
+  }),
 
   // === 认证 (旧版兼容) ===
 
@@ -71,7 +110,8 @@ export const handlers = [
     }
     const { name, password } = body.auth.identity.password.user
 
-    if (MOCK_USERS[name] !== password) {
+    const u = findUser(name)
+    if (!u || u.password !== password) {
       return HttpResponse.json(
         { error: { message: '用户名或密码错误', code: 401, title: 'Unauthorized' } },
         { status: 401 },
@@ -81,8 +121,8 @@ export const handlers = [
     return HttpResponse.json(
       {
         token: {
-          user: { id: `user-${name}`, name, domain: { id: 'default', name: 'Default' } },
-          roles: MOCK_ROLES[name] ?? [{ id: 'r1', name: 'service_auditor' }],
+          user: { id: u.id, name, domain: { id: 'default', name: 'Default' } },
+          roles: rolesForUser(name),
           project: { id: 'proj-1', name: 'admin', domain: { id: 'default', name: 'Default' } },
           expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
           issued_at: new Date().toISOString(),

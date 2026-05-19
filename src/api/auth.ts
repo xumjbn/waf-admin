@@ -40,10 +40,21 @@ export const login = async (payload: LoginPayload): Promise<void> => {
       token: access_token,
       refreshToken: refresh_token,
       user: { id: String(me.id), name: me.username, realName: me.real_name },
-      roles: (me.roles ?? []).map((r: { id: number; name: string }) => ({
-        id: String(r.id),
-        name: r.name,
-      })),
+      roles: (me.roles ?? []).map(
+        (r: {
+          id: number | string
+          name: string
+          display_name?: string
+          modules?: string[] | '*'
+          readonly?: boolean
+        }) => ({
+          id: String(r.id),
+          name: r.name,
+          display_name: r.display_name,
+          modules: r.modules,
+          readonly: r.readonly,
+        }),
+      ),
     })
   } catch {
     // 用户信息获取失败不阻塞登录

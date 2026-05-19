@@ -6,7 +6,10 @@ export interface AuthUser {
 
 export interface AuthRole {
   id: string
-  name: string
+  name: string                       // 后端规范 key（如 'system_admin'）
+  display_name?: string              // 中文显示名（如 '系统管理员'）
+  modules?: string[] | '*'           // 可访问模块列表，'*' 表示全部
+  readonly?: boolean                 // true = 只读角色（仅查看，禁写删）
 }
 
 // 通用错误

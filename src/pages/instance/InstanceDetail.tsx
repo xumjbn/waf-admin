@@ -76,7 +76,7 @@ export default function InstanceDetail() {
       </div>
 
       <Tabs
-        items={[
+        tabs={[
           { value: 'detail', label: '详情', ico: 'eye' },
           { value: 'config', label: '配置', ico: 'sliders' },
           { value: 'history', label: '操作历史', ico: 'logs' },
@@ -106,7 +106,7 @@ export default function InstanceDetail() {
                   <span className="muted fs-12">内存</span>
                   <span className="mono fs-12">{inst.mem}%</span>
                 </div>
-                <Bar value={inst.mem} max={100} kind={inst.mem > 80 ? 'danger' : 'info'} />
+                <Bar value={inst.mem} max={100} kind={inst.mem > 80 ? 'danger' : 'brand'} />
               </div>
             </div>
           </Card>
