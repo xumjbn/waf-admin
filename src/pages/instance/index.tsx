@@ -1,7 +1,23 @@
+import { useState } from 'react'
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Card, Icon, KPI, Tag, Bar, Button } from '@/components/ui'
-import { CLUSTERS, INSTANCES } from '@/mocks/nebula'
+import { CLUSTERS, INSTANCES, type Instance } from '@/mocks/nebula'
+import InstanceDetail from './InstanceDetail'
 
-export default function InstancesPage() {
+function InstancesPage() {
+  const nav = useNavigate()
+  const [list, setList] = useState<Instance[]>(INSTANCES)
+
+  const restart = (id: string) => {
+    const inst = list.find(x => x.id === id)
+    if (!inst) return
+    if (!window.confirm(`确认重启实例 ${inst.id} (${inst.ip})？\n\n重启期间该实例不接收新连接，预计 10-15 秒。`)) return
+    setList(prev => prev.map(x => (x.id === id ? { ...x, state: 'offline' as const, uptime: '0s' } : x)))
+    setTimeout(() => {
+      setList(prev => prev.map(x => (x.id === id ? { ...x, state: 'online' as const, uptime: '12s' } : x)))
+    }, 1500)
+  }
+
   return (
     <>
       <div className="page-hd">
@@ -13,11 +29,11 @@ export default function InstancesPage() {
           <p>WAF 实例池 · 集群编排 · 主备 HA · 资源调度</p>
         </div>
         <div className="actions">
-          <Button variant="ghost">
+          <Button variant="ghost" onClick={() => window.alert('新增节点向导待接入')}>
             <Icon name="server" size={13} className="ico" />
             新增节点
           </Button>
-          <Button variant="pri">
+          <Button variant="pri" onClick={() => window.alert('新建集群向导待接入')}>
             <Icon name="plus" size={13} className="ico" />
             新建集群
           </Button>
@@ -118,7 +134,7 @@ export default function InstancesPage() {
       <Card
         title="实例列表"
         ico="server"
-        meta={`${INSTANCES.length} 个节点`}
+        meta={`${list.length} 个节点`}
         actions={
           <div className="flex gap-2">
             <input className="input" placeholder="搜索实例 / IP" style={{ width: 220 }} />
@@ -146,10 +162,16 @@ export default function InstancesPage() {
             </tr>
           </thead>
           <tbody>
-            {INSTANCES.map(i => (
+            {list.map(i => (
               <tr key={i.id}>
                 <td className="fw-600">
-                  <span className="tbl-link">{i.id}</span>
+                  <span
+                    className="tbl-link"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => nav(`/instance/${i.id}`)}
+                  >
+                    {i.id}
+                  </span>
                 </td>
                 <td className="mono">{i.ip}</td>
                 <td className="muted">{i.cluster}</td>
@@ -182,8 +204,29 @@ export default function InstancesPage() {
                 </td>
                 <td className="muted fs-12">{i.uptime}</td>
                 <td className="fs-12">
-                  <span className="tbl-link">详情</span> · <span className="tbl-link">配置</span>{' '}
-                  · <span className="tbl-link">重启</span>
+                  <span
+                    className="tbl-link"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => nav(`/instance/${i.id}?tab=detail`)}
+                  >
+                    详情
+                  </span>{' '}
+                  ·{' '}
+                  <span
+                    className="tbl-link"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => nav(`/instance/${i.id}?tab=config`)}
+                  >
+                    配置
+                  </span>{' '}
+                  ·{' '}
+                  <span
+                    className="tbl-link"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => restart(i.id)}
+                  >
+                    重启
+                  </span>
                 </td>
               </tr>
             ))}
@@ -191,5 +234,15 @@ export default function InstancesPage() {
         </table>
       </Card>
     </>
+  )
+}
+
+export default function InstanceRoutes() {
+  return (
+    <Routes>
+      <Route index element={<InstancesPage />} />
+      <Route path=":id" element={<InstanceDetail />} />
+      <Route path="*" element={<Navigate to="/instance" replace />} />
+    </Routes>
   )
 }

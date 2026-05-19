@@ -5,8 +5,13 @@ import { mkAttack, type AttackEvent } from '@/mocks/nebula'
 type FilterTab = 'all' | 'block' | 'chal' | 'log'
 
 export default function LogsPage() {
-  const events = useMemo(() => Array.from({ length: 40 }, () => mkAttack()), [])
-  const [selected, setSelected] = useState<AttackEvent>(events[0])
+  const allEvents = useMemo(() => Array.from({ length: 40 }, () => mkAttack()), [])
+  const [ipFilter, setIpFilter] = useState<string | null>(null)
+  const events = useMemo(
+    () => (ipFilter ? allEvents.filter(e => e.ip === ipFilter) : allEvents),
+    [allEvents, ipFilter],
+  )
+  const [selected, setSelected] = useState<AttackEvent>(allEvents[0])
   const [tab, setTab] = useState<FilterTab>('all')
 
   return (
@@ -77,7 +82,9 @@ export default function LogsPage() {
             <Icon name="search" size={13} className="ico" />
             查询
           </Button>
-          <Button variant="ghost">重置</Button>
+          <Button variant="ghost" onClick={() => setIpFilter(null)}>
+            {ipFilter ? '清除 IP 关联' : '重置'}
+          </Button>
         </div>
       </Card>
 
@@ -85,7 +92,11 @@ export default function LogsPage() {
         <Card
           title="攻击日志"
           ico="logs"
-          meta={`共 ${events.length} 条匹配`}
+          meta={
+            ipFilter
+              ? `IP ${ipFilter} · ${events.length} 条关联事件`
+              : `共 ${events.length} 条匹配`
+          }
           actions={
             <Tabs
               tabs={[
@@ -152,13 +163,19 @@ export default function LogsPage() {
           </div>
         </Card>
 
-        <ForensicsPanel event={selected} />
+        <ForensicsPanel
+          event={selected}
+          onRelated={ip => {
+            setIpFilter(ip)
+            window.scrollTo({ top: 0, behavior: 'smooth' })
+          }}
+        />
       </div>
     </>
   )
 }
 
-function ForensicsPanel({ event }: { event: AttackEvent }) {
+function ForensicsPanel({ event, onRelated }: { event: AttackEvent; onRelated: (ip: string) => void }) {
   return (
     <div className="stack">
       <Card title="事件取证" ico="eye" meta={event.id} bracketed>
@@ -252,13 +269,33 @@ function ForensicsPanel({ event }: { event: AttackEvent }) {
           {event.payload}
         </div>
         <div className="flex gap-2 mt-3">
-          <Button variant="pri" size="sm">
+          <Button
+            variant="pri"
+            size="sm"
+            onClick={() => {
+              if (window.confirm(`确认将 ${event.ip} 加入封禁列表？\n\n该 IP 将立即被所有站点拒绝访问。`)) {
+                window.alert(`已封禁 ${event.ip}\n生效范围：全部站点 · 持续 24h`)
+              }
+            }}
+          >
             封禁此 IP
           </Button>
-          <Button variant="line" size="sm">
+          <Button
+            variant="line"
+            size="sm"
+            onClick={() => {
+              if (window.confirm(`确认将 ${event.ip} 加入白名单？\n\n该 IP 的请求将跳过所有 WAF 检测。`)) {
+                window.alert(`已加入白名单 · ${event.ip}`)
+              }
+            }}
+          >
             加入白名单
           </Button>
-          <Button variant="ghost" size="sm">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onRelated(event.ip)}
+          >
             关联事件
           </Button>
         </div>

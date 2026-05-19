@@ -359,11 +359,11 @@ function SiteDetailPanel({ site }: { site: Site }) {
             <Icon name="edit" size={12} className="ico" />
             编辑站点
           </Button>
-          <Button variant="ghost">
+          <Button variant="ghost" onClick={() => navigate('/policy')}>
             <Icon name="rules" size={12} className="ico" />
             配置规则
           </Button>
-          <Button variant="ghost">
+          <Button variant="ghost" onClick={() => navigate('/log')}>
             <Icon name="logs" size={12} className="ico" />
             查看日志
           </Button>
