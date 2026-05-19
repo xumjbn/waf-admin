@@ -6,7 +6,6 @@ import {
   MOCK_ROLES,
   MOCK_PROJECTS,
   ALL_MODULES,
-  findRole,
   type ModuleKey,
   type MockUser,
   type MockRole,
