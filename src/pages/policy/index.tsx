@@ -81,9 +81,24 @@ function PolicyPage() {
           rules={rules}
           onMove={moveRule}
           onEdit={id => nav(`/policy/rule/${id}`)}
-          onToggle={id =>
-            setRules(r => r.map(x => (x.id === id ? { ...x, enabled: !x.enabled } : x)))
-          }
+          onToggle={async id => {
+            const target = rules.find(x => x.id === id)
+            if (!target) return
+            const nextEnabled = !target.enabled
+            // 乐观更新 + 失败回滚
+            setRules(r =>
+              r.map(x => (x.id === id ? { ...x, enabled: nextEnabled } : x)),
+            )
+            try {
+              await policyApi.toggleRule(id, nextEnabled)
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err)
+              window.alert(`切换失败：${msg}`)
+              setRules(r =>
+                r.map(x => (x.id === id ? { ...x, enabled: target.enabled } : x)),
+              )
+            }
+          }}
           dragSrcRef={dragSrcRef}
           dragOver={dragOver}
           setDragOver={setDragOver}
