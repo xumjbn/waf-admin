@@ -2,8 +2,12 @@ import { useEffect, useMemo, useState, useRef } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Card, Icon, type IconName, Tag, Button, Tabs, Toggle, Sparkline } from '@/components/ui'
 import { Donut } from '@/components/charts'
-import { type Rule } from '@/mocks/nebula'
+import { type Rule, type Site } from '@/mocks/nebula'
 import * as policyApi from '@/api/live/policy'
+import * as siteApi from '@/api/live/site'
+import * as aclApi from '@/api/live/acl'
+import type { SiteModuleConfig } from '@/api/live/site'
+import type { AclRule } from '@/api/live/acl'
 import RuleEdit from './RuleEdit'
 
 type TabKey = 'modules' | 'rules' | 'acl' | 'bot' | 'api'
@@ -125,105 +129,319 @@ function PolicyPage() {
   )
 }
 
-const PROTECTION_MODULES: { id: string; ico: IconName; title: string; desc: string; enabled: boolean; level: 'low' | 'medium' | 'high'; hits: number }[] = [
-  { id: 'sqli', ico: 'database', title: 'SQL 注入防护', desc: '基于 OWASP CRS + 语义分析 + 自定义指纹', enabled: true, level: 'high', hits: 23410 },
-  { id: 'xss', ico: 'fire', title: 'XSS 防护', desc: '上下文感知、输出编码、CSP 友好', enabled: true, level: 'high', hits: 14209 },
-  { id: 'csrf', ico: 'lock', title: 'CSRF 防护', desc: 'Token 验证、SameSite 检测', enabled: true, level: 'medium', hits: 1280 },
-  { id: 'cc', ico: 'activity', title: 'CC 攻击防护', desc: '动态阈值 + 智能挑战 + IP/CIDR 限速', enabled: true, level: 'high', hits: 28490 },
-  { id: 'upload', ico: 'database', title: '文件上传检测', desc: 'MIME 校验 + 内容指纹 + WebShell 识别', enabled: true, level: 'high', hits: 432 },
-  { id: 'bot', ico: 'crosshair', title: 'Bot 流量管理', desc: 'TLS 指纹 + JS 挑战 + 行为分析', enabled: true, level: 'medium', hits: 18460 },
-  { id: 'api', ico: 'flow', title: 'API 安全', desc: 'Schema 校验 + JWT 验证 + 速率限制', enabled: false, level: 'medium', hits: 902 },
-  { id: 'geo', ico: 'globe', title: '地理区域屏蔽', desc: '基于 GeoIP 的国家/区域级访问控制', enabled: true, level: 'low', hits: 2080 },
-  { id: 'leech', ico: 'eye', title: '防盗链', desc: 'Referer 校验 + 资源链接签名', enabled: false, level: 'low', hits: 0 },
+// 模块元信息 —— id 与后端 site_modules.module + policies.category 一致
+// （sqli/xss/rce/lfi-rfi/bot/rate-limit/ip-reputation/virtual-patches）
+const MODULE_META: Record<
+  string,
+  { ico: IconName; title: string; desc: string }
+> = {
+  sqli: {
+    ico: 'database',
+    title: 'SQL / NoSQL 注入',
+    desc: 'UNION SELECT / 注释绕过 / 盲注 / 元信息探测 / MongoDB',
+  },
+  xss: {
+    ico: 'fire',
+    title: 'XSS',
+    desc: '脚本标签 / 事件处理器 / URI scheme / 模板注入 / DOM sink',
+  },
+  rce: {
+    ico: 'crosshair',
+    title: 'RCE / 反序列化',
+    desc: 'Shell 命令 / PHP 危险函数 / Java 反序列化 / WebShell',
+  },
+  'lfi-rfi': {
+    ico: 'flow',
+    title: '路径遍历 / SSRF',
+    desc: '../ 穿越 / system 文件 / PHP wrapper / RFI / SSRF 内网目标',
+  },
+  bot: {
+    ico: 'eye',
+    title: 'Bot / 扫描器',
+    desc: 'sqlmap/nikto UA / 缺 UA / Headless / 行为评分',
+  },
+  'rate-limit': {
+    ico: 'activity',
+    title: '限速 / 爆破',
+    desc: '全局 / 登录 / 注册 / API token / 支付接口',
+  },
+  'ip-reputation': {
+    ico: 'lock',
+    title: 'IP 信誉',
+    desc: '黑名单 / TOR 出口 / 地理屏蔽 / 后台路径爆破计数',
+  },
+  'virtual-patches': {
+    ico: 'shield',
+    title: '虚拟补丁 CVE',
+    desc: 'Log4Shell / Spring4Shell / ProxyShell / Confluence OGNL',
+  },
+}
+const MODULE_ORDER = [
+  'sqli',
+  'xss',
+  'rce',
+  'lfi-rfi',
+  'bot',
+  'rate-limit',
+  'ip-reputation',
+  'virtual-patches',
 ]
 
 function ProtectionModules() {
-  const [mods, setMods] = useState(PROTECTION_MODULES)
+  const [sites, setSites] = useState<Site[]>([])
+  const [activeSiteId, setActiveSiteId] = useState<string>('')
+  const [mods, setMods] = useState<SiteModuleConfig[]>([])
+  const [loading, setLoading] = useState(true)
+  const [savingKey, setSavingKey] = useState<string | null>(null) // 当前在改的 module 名
+  const [error, setError] = useState<string | null>(null)
+
+  // 加载站点列表 + 默认选第一个
+  useEffect(() => {
+    let cancelled = false
+    siteApi
+      .listSites()
+      .then(list => {
+        if (cancelled) return
+        setSites(list)
+        if (list.length > 0) setActiveSiteId(prev => prev || list[0].id)
+        else setLoading(false)
+      })
+      .catch(err => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : String(err))
+        setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // 切站点时拉模块配置
+  useEffect(() => {
+    if (!activeSiteId) return
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    siteApi
+      .listSiteModules(activeSiteId)
+      .then(list => {
+        if (cancelled) return
+        // 按 MODULE_ORDER 排序
+        const ordered = MODULE_ORDER.map(
+          name =>
+            list.find(m => m.module === name) ?? {
+              site_id: Number(activeSiteId),
+              module: name,
+              enabled: true,
+              level: 'medium' as const,
+            },
+        )
+        setMods(ordered)
+      })
+      .catch(err => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : String(err))
+        setMods([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeSiteId])
+
+  const updateModule = async (
+    module: string,
+    patch: { enabled?: boolean; level?: 'low' | 'medium' | 'high' },
+  ) => {
+    if (!activeSiteId) return
+    // 乐观更新
+    const prevMods = mods
+    setMods(prev => prev.map(m => (m.module === module ? { ...m, ...patch } : m)))
+    setSavingKey(module)
+    try {
+      await siteApi.updateSiteModule(activeSiteId, module, patch)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      window.alert(`保存失败：${msg}`)
+      setMods(prevMods)
+    } finally {
+      setSavingKey(null)
+    }
+  }
+  const activeSite = sites.find(s => s.id === activeSiteId)
+
+  if (sites.length === 0 && !loading) {
+    return (
+      <div
+        className="muted fs-13"
+        style={{ padding: 40, textAlign: 'center', lineHeight: 1.8 }}
+      >
+        还没有站点。请到『站点接入』新建一个站点后再来配置防护模块。
+      </div>
+    )
+  }
+
   return (
     <div>
+      {/* 应用范围：每个站点独立的模块配置 */}
       <div className="flex items-center justify-between mb-3">
         <div className="muted fs-12">
-          应用范围：<span className="text-0 fw-600">官网主站 (www.example.com)</span>
+          应用范围：
+          <span className="text-0 fw-600">
+            {activeSite ? `${activeSite.name} (${activeSite.domain})` : '—'}
+          </span>
         </div>
-        <select className="select">
-          <option>官网主站</option>
-          <option>API 网关</option>
+        <select
+          className="select"
+          value={activeSiteId}
+          onChange={e => setActiveSiteId(e.target.value)}
+          style={{ minWidth: 220 }}
+        >
+          {sites.map(s => (
+            <option key={s.id} value={s.id}>
+              {s.name} · {s.domain}
+            </option>
+          ))}
         </select>
       </div>
-      <div className="row r-3 gap-3">
-        {mods.map(m => (
-          <div key={m.id} className="card" style={{ padding: 18 }}>
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-3">
-                <div
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: 10,
-                    background: m.enabled ? 'var(--grad-soft)' : 'var(--bg-3)',
-                    border: '1px solid var(--line-strong)',
-                    display: 'grid',
-                    placeItems: 'center',
-                    color: m.enabled ? 'var(--brand-1)' : 'var(--text-3)',
-                  }}
-                >
-                  <Icon name={m.ico} size={18} />
-                </div>
-                <div>
-                  <div className="fw-700 text-0 fs-13">{m.title}</div>
-                  <div className="muted fs-11">{m.desc}</div>
-                </div>
-              </div>
-              <Toggle
-                on={m.enabled}
-                onChange={() =>
-                  setMods(prev =>
-                    prev.map(x => (x.id === m.id ? { ...x, enabled: !x.enabled } : x)),
-                  )
-                }
-              />
-            </div>
-            <div className="flex items-center justify-between" style={{ marginTop: 14 }}>
-              <div className="flex items-center gap-2">
-                <span className="muted fs-11">等级</span>
-                {(['low', 'medium', 'high'] as const).map(L => (
-                  <span
-                    key={L}
-                    style={{
-                      padding: '2px 8px',
-                      borderRadius: 4,
-                      fontSize: 10.5,
-                      fontWeight: 700,
-                      fontFamily: 'JetBrains Mono',
-                      background:
-                        m.level === L
-                          ? L === 'high'
-                            ? 'rgba(239,68,68,.15)'
-                            : L === 'medium'
-                              ? 'rgba(245,158,11,.15)'
-                              : 'rgba(34,211,238,.15)'
-                          : 'transparent',
-                      color:
-                        m.level === L
-                          ? L === 'high'
-                            ? 'var(--danger)'
-                            : L === 'medium'
-                              ? 'var(--warn)'
-                              : 'var(--info)'
-                          : 'var(--text-3)',
-                      border: m.level === L ? '1px solid currentColor' : '1px solid var(--line)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {L.toUpperCase()}
-                  </span>
-                ))}
-              </div>
-              <span className="mono fs-11 muted">{m.hits.toLocaleString()} 拦截</span>
-            </div>
-          </div>
-        ))}
+
+      {/* 模型说明条 —— 让用户一眼看出『模块 → 等级 → 规则』关系 */}
+      <div
+        className="muted fs-11 mb-3"
+        style={{
+          padding: 10,
+          background: 'var(--bg-2)',
+          borderRadius: 6,
+          lineHeight: 1.7,
+          border: '1px solid var(--line-2)',
+        }}
+      >
+        🛈 每个站点独立配置 8 个防护模块。模块开关与等级（低/中/高）写入
+        <code> site_modules </code>表；级别决定加载哪些 severity 的规则：
+        <b style={{ color: 'var(--info)' }}>低</b>=仅 critical ·
+        <b style={{ color: 'var(--warn)' }}>中</b>=critical + high ·
+        <b style={{ color: 'var(--danger)' }}>高</b>=critical + high + medium。
+        规则本身在『规则引擎』Tab 维护（来自 deploy/modsec/rules.d/）。
       </div>
+
+      {error && (
+        <div
+          className="fs-12 mb-3"
+          style={{
+            padding: '8px 12px',
+            background: 'var(--bg-danger-1, #fee2e2)',
+            color: 'var(--text-danger, #b91c1c)',
+            borderRadius: 6,
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="muted fs-13" style={{ padding: 32, textAlign: 'center' }}>
+          加载模块配置…
+        </div>
+      ) : (
+        <div className="row r-3 gap-3">
+          {mods.map(m => {
+            const meta = MODULE_META[m.module] ?? {
+              ico: 'sparkles' as IconName,
+              title: m.module,
+              desc: '',
+            }
+            const isSaving = savingKey === m.module
+            return (
+              <div
+                key={m.module}
+                className="card"
+                style={{ padding: 18, opacity: isSaving ? 0.6 : 1, transition: 'opacity .15s' }}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <div
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 10,
+                        background: m.enabled ? 'var(--grad-soft)' : 'var(--bg-3)',
+                        border: '1px solid var(--line-strong)',
+                        display: 'grid',
+                        placeItems: 'center',
+                        color: m.enabled ? 'var(--brand-1)' : 'var(--text-3)',
+                      }}
+                    >
+                      <Icon name={meta.ico} size={18} />
+                    </div>
+                    <div>
+                      <div className="fw-700 text-0 fs-13">{meta.title}</div>
+                      <div className="muted fs-11">{meta.desc}</div>
+                    </div>
+                  </div>
+                  <Toggle
+                    on={m.enabled}
+                    onChange={v => updateModule(m.module, { enabled: v })}
+                  />
+                </div>
+                <div
+                  className="flex items-center justify-between"
+                  style={{ marginTop: 14 }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="muted fs-11">等级</span>
+                    {(['low', 'medium', 'high'] as const).map(L => {
+                      const active = m.level === L
+                      const color =
+                        L === 'high'
+                          ? 'var(--danger)'
+                          : L === 'medium'
+                            ? 'var(--warn)'
+                            : 'var(--info)'
+                      const bg =
+                        L === 'high'
+                          ? 'rgba(239,68,68,.15)'
+                          : L === 'medium'
+                            ? 'rgba(245,158,11,.15)'
+                            : 'rgba(34,211,238,.15)'
+                      return (
+                        <button
+                          key={L}
+                          onClick={() => !active && updateModule(m.module, { level: L })}
+                          disabled={isSaving || !m.enabled}
+                          style={{
+                            padding: '2px 8px',
+                            borderRadius: 4,
+                            fontSize: 10.5,
+                            fontWeight: 700,
+                            fontFamily: 'JetBrains Mono',
+                            background: active ? bg : 'transparent',
+                            color: active ? color : 'var(--text-3)',
+                            border: active
+                              ? '1px solid currentColor'
+                              : '1px solid var(--line)',
+                            cursor:
+                              isSaving || !m.enabled || active ? 'default' : 'pointer',
+                          }}
+                        >
+                          {L.toUpperCase()}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <span
+                    className="mono fs-11"
+                    style={{ color: m.enabled ? 'var(--text-2)' : 'var(--text-3)' }}
+                  >
+                    {m.enabled ? '✓ 启用' : '○ 禁用'}
+                  </span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -681,64 +899,339 @@ function CatChip({
 }
 
 function AclPanel() {
+  const [rules, setRules] = useState<AclRule[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [addOpen, setAddOpen] = useState<'allow' | 'deny' | null>(null)
+
+  const refresh = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      setRules(await aclApi.listAclRules())
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+      setRules([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    refresh()
+  }, [])
+
+  const allowRules = useMemo(() => rules.filter(r => r.action === 'allow'), [rules])
+  const denyRules = useMemo(() => rules.filter(r => r.action === 'deny'), [rules])
+
+  const onDelete = async (id: number, label: string) => {
+    if (!window.confirm(`确认删除 ACL 规则『${label}』？`)) return
+    try {
+      await aclApi.deleteAclRule(id)
+      await refresh()
+    } catch (e: unknown) {
+      window.alert(`删除失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  const onToggle = async (rule: AclRule) => {
+    const next = !rule.is_enabled
+    setRules(prev =>
+      prev.map(r => (r.id === rule.id ? { ...r, is_enabled: next } : r)),
+    )
+    try {
+      await aclApi.toggleAclRule(rule.id, next)
+    } catch (e: unknown) {
+      window.alert(`切换失败：${e instanceof Error ? e.message : String(e)}`)
+      setRules(prev =>
+        prev.map(r => (r.id === rule.id ? { ...r, is_enabled: rule.is_enabled } : r)),
+      )
+    }
+  }
+
   return (
-    <div className="row r-1-1 gap-3">
-      <Card title="IP 白名单" ico="check" meta="信任源">
-        <div className="muted fs-12 mb-3">命中规则将立即放行，跳过其余检测。</div>
-        <table>
-          <tbody>
-            {[
-              ['10.0.0.0/8', '内部办公网络', '全部站点'],
-              ['172.16.5.0/24', '运维堡垒机', '管理后台'],
-              ['8.8.8.0/24', '可信合作伙伴', 'API 网关'],
-              ['203.0.113.10', 'CTO 出口 IP', '全部站点'],
-            ].map(([ip, label, scope]) => (
-              <tr key={ip}>
-                <td>
-                  <Tag kind="ok">
-                    <span className="dot" />
-                    放行
-                  </Tag>
-                </td>
-                <td className="mono">{ip}</td>
-                <td>{label}</td>
-                <td className="muted fs-12">{scope}</td>
-                <td>
-                  <span className="tbl-link">删除</span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
-      <Card title="IP 黑名单 / 地理屏蔽" ico="lock" meta="拒绝源">
-        <div className="muted fs-12 mb-3">命中规则将直接 403 拦截。</div>
-        <table>
-          <tbody>
-            {[
-              ['185.156.0.0/16', '已知恶意 ASN', '全部站点'],
-              ['IR', '国家 · 伊朗', '管理后台'],
-              ['KP', '国家 · 朝鲜', '全部站点'],
-              ['193.27.228.0/22', 'TOR 出口节点', '管理后台'],
-            ].map(([ip, label, scope]) => (
-              <tr key={ip + label}>
-                <td>
-                  <Tag kind="danger">
-                    <span className="dot" />
-                    拦截
-                  </Tag>
-                </td>
-                <td className="mono">{ip}</td>
-                <td>{label}</td>
-                <td className="muted fs-12">{scope}</td>
-                <td>
-                  <span className="tbl-link">删除</span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+    <>
+      {error && (
+        <div
+          className="fs-12 mb-3"
+          style={{
+            padding: '8px 12px',
+            background: 'var(--bg-danger-1, #fee2e2)',
+            color: 'var(--text-danger, #b91c1c)',
+            borderRadius: 6,
+          }}
+        >
+          加载 ACL 规则失败：{error}
+        </div>
+      )}
+      <div className="row r-1-1 gap-3">
+        <Card
+          title="IP 白名单"
+          ico="check"
+          meta={`${allowRules.length} 条 · 信任源`}
+          actions={
+            <Button variant="line" size="sm" onClick={() => setAddOpen('allow')}>
+              <Icon name="plus" size={11} className="ico" /> 添加白名单
+            </Button>
+          }
+        >
+          <div className="muted fs-12 mb-3">命中规则将立即放行，跳过其余检测。</div>
+          <AclTable
+            rules={allowRules}
+            loading={loading}
+            kind="allow"
+            onDelete={onDelete}
+            onToggle={onToggle}
+          />
+        </Card>
+
+        <Card
+          title="IP 黑名单 / 地理屏蔽"
+          ico="lock"
+          meta={`${denyRules.length} 条 · 拒绝源`}
+          actions={
+            <Button variant="line" size="sm" onClick={() => setAddOpen('deny')}>
+              <Icon name="plus" size={11} className="ico" /> 添加黑名单
+            </Button>
+          }
+        >
+          <div className="muted fs-12 mb-3">命中规则将直接 403 拦截。</div>
+          <AclTable
+            rules={denyRules}
+            loading={loading}
+            kind="deny"
+            onDelete={onDelete}
+            onToggle={onToggle}
+          />
+        </Card>
+      </div>
+
+      {addOpen && (
+        <AclCreateModal
+          kind={addOpen}
+          onCancel={() => setAddOpen(null)}
+          onSubmit={async payload => {
+            await aclApi.createAclRule({ ...payload, action: addOpen })
+            setAddOpen(null)
+            await refresh()
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+function AclTable({
+  rules,
+  loading,
+  kind,
+  onDelete,
+  onToggle,
+}: {
+  rules: AclRule[]
+  loading: boolean
+  kind: 'allow' | 'deny'
+  onDelete: (id: number, label: string) => void
+  onToggle: (r: AclRule) => void
+}) {
+  if (loading) {
+    return (
+      <div className="muted fs-12" style={{ padding: '16px 0', textAlign: 'center' }}>
+        加载中…
+      </div>
+    )
+  }
+  if (rules.length === 0) {
+    return (
+      <div className="muted fs-12" style={{ padding: '20px 0', textAlign: 'center' }}>
+        暂无{kind === 'allow' ? '白名单' : '黑名单'}规则。点右上按钮添加第一条。
+      </div>
+    )
+  }
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th style={{ width: 60 }}>动作</th>
+          <th>IP / CIDR</th>
+          <th>名称</th>
+          <th>启用</th>
+          <th style={{ width: 60 }}>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rules.map(r => (
+          <tr key={r.id}>
+            <td>
+              <Tag kind={kind === 'allow' ? 'ok' : 'danger'}>
+                <span className="dot" />
+                {kind === 'allow' ? '放行' : '拦截'}
+              </Tag>
+            </td>
+            <td className="mono fs-12">{r.src_ip}</td>
+            <td>
+              <div className="fs-13 text-0">{r.name}</div>
+              {r.description && <div className="muted fs-11">{r.description}</div>}
+            </td>
+            <td>
+              <Toggle on={r.is_enabled} onChange={() => onToggle(r)} />
+            </td>
+            <td>
+              <span
+                className="tbl-link"
+                style={{ cursor: 'pointer', color: 'var(--danger)' }}
+                onClick={() => onDelete(r.id, r.name)}
+              >
+                删除
+              </span>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+function AclCreateModal(props: {
+  kind: 'allow' | 'deny'
+  onCancel: () => void
+  onSubmit: (payload: { name: string; src_ip: string; description: string }) => Promise<void>
+}) {
+  const [name, setName] = useState('')
+  const [srcIp, setSrcIp] = useState('')
+  const [description, setDescription] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const onConfirm = async () => {
+    if (!name.trim() || !srcIp.trim()) {
+      setErr('名称和 IP/CIDR 都必填')
+      return
+    }
+    setSubmitting(true)
+    setErr(null)
+    try {
+      await props.onSubmit({
+        name: name.trim(),
+        src_ip: srcIp.trim(),
+        description: description.trim(),
+      })
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setSubmitting(false)
+    }
+  }
+
+  const isAllow = props.kind === 'allow'
+  return (
+    <div
+      onClick={props.onCancel}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(13,10,24,.62)',
+        backdropFilter: 'blur(4px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        style={{
+          width: 460,
+          maxWidth: 'calc(100vw - 32px)',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--line-strong)',
+          borderRadius: 12,
+          padding: 24,
+        }}
+      >
+        <div className="mb-3">
+          <div className="fw-700 text-0 fs-16">
+            {isAllow ? '添加 IP 白名单' : '添加 IP 黑名单'}
+          </div>
+          <div className="muted fs-12 mt-1">
+            {isAllow
+              ? '命中后立即放行，跳过所有 modsec 检测'
+              : '命中后直接 403 拦截，先于 modsec 规则生效'}
+          </div>
+        </div>
+
+        <div className="mb-3">
+          <label
+            className="fs-12 fw-600"
+            style={{ display: 'block', marginBottom: 6, color: 'var(--text-0)' }}
+          >
+            名称 <span style={{ color: 'var(--brand-1)' }}>*</span>
+          </label>
+          <input
+            className="input"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder={isAllow ? '如 内部办公网络' : '如 已知恶意 ASN'}
+            autoFocus
+          />
+        </div>
+        <div className="mb-3">
+          <label
+            className="fs-12 fw-600"
+            style={{ display: 'block', marginBottom: 6, color: 'var(--text-0)' }}
+          >
+            IP / CIDR <span style={{ color: 'var(--brand-1)' }}>*</span>
+          </label>
+          <input
+            className="input"
+            value={srcIp}
+            onChange={e => setSrcIp(e.target.value)}
+            placeholder="如 10.0.0.0/8 或 203.0.113.10"
+          />
+          <div className="muted fs-11" style={{ marginTop: 4 }}>
+            支持单 IP、IPv4/IPv6 CIDR；国家代码（IR / KP 等）通过 ip-reputation 模块处理
+          </div>
+        </div>
+        <div className="mb-3">
+          <label
+            className="fs-12 fw-600"
+            style={{ display: 'block', marginBottom: 6, color: 'var(--text-0)' }}
+          >
+            备注
+          </label>
+          <textarea
+            className="input"
+            rows={2}
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            style={{ resize: 'vertical' }}
+          />
+        </div>
+
+        {err && (
+          <div
+            className="fs-12"
+            style={{
+              padding: '8px 12px',
+              marginBottom: 10,
+              background: 'var(--bg-danger-1, #fee2e2)',
+              color: 'var(--text-danger, #b91c1c)',
+              borderRadius: 6,
+            }}
+          >
+            {err}
+          </div>
+        )}
+
+        <div className="flex gap-2" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
+          <Button variant="ghost" onClick={props.onCancel}>
+            取消
+          </Button>
+          <Button variant="pri" onClick={onConfirm} disabled={submitting}>
+            {submitting ? '创建中…' : `创建${isAllow ? '白名单' : '黑名单'}`}
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }
