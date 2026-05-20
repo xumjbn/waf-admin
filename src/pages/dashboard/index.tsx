@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, Icon, KPI, Tag, Bar, Button } from '@/components/ui'
 import { AreaChart, BarChartH, Donut, Heatmap, Radar } from '@/components/charts'
-import { AttackGlobe } from '@/components/globe/AttackGlobe'
+import { AttackGlobe, type AttackGlobeHandle } from '@/components/globe/AttackGlobe'
 import { INSTANCES, mkAttack, type AttackEvent } from '@/mocks/nebula'
 import * as logApi from '@/api/live/log'
 
@@ -35,6 +35,7 @@ function riskKind(risk: AttackEvent['risk']): 'danger' | 'warn' | 'def' {
 
 export default function PageDashboard() {
   const [now, setNow] = useState(() => new Date())
+  const globeRef = useRef<AttackGlobeHandle | null>(null)
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000)
     return () => clearInterval(id)
@@ -240,14 +241,19 @@ export default function PageDashboard() {
                 <span className="dot" />
                 LIVE
               </Tag>
-              <Button variant="ghost" size="sm">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => globeRef.current?.toggleFullscreen()}
+                title="全屏 / 退出全屏"
+              >
                 <Icon name="expand" size={11} className="ico" />
               </Button>
             </>
           }
           bodyClass="np"
         >
-          <AttackGlobe height={480} attacks={globeAttacks} />
+          <AttackGlobe ref={globeRef} height={480} attacks={globeAttacks} />
         </Card>
 
         <div className="stack">
