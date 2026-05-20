@@ -30,6 +30,7 @@ interface BackendPolicy {
   builtin: boolean
   hits: number
   last_hit_at?: string | null
+  modsec_id?: string // migration 000018 起，仅 builtin 规则有
 }
 
 function authHeader(): Record<string, string> {
@@ -55,9 +56,11 @@ function mapAction(a: string): UiRule['action'] {
 }
 
 function adapt(p: BackendPolicy): UiRule {
+  // builtin 规则显示成 "M-120001 经典 SQL 关键字注入" 让用户一眼看出对应 modsec id
+  const displayName = p.modsec_id ? `M-${p.modsec_id} ${p.name}` : p.name
   return {
     id: String(p.id),
-    name: p.name,
+    name: displayName,
     scope: p.scope || '全部站点',
     field: p.field || '—',
     match: p.match || p.severity || '—',
@@ -131,4 +134,20 @@ export async function incrementHits(id: string | number, delta = 1): Promise<UiR
     { headers: authHeader() },
   )
   return adapt(res.data)
+}
+
+// 手动触发 builtin 规则同步（管理员添加新 .conf 后立即生效，不必重启 control）
+export interface SyncBuiltinResult {
+  dir: string
+  inserted: number
+  updated: number
+  total: number
+}
+export async function syncBuiltin(): Promise<SyncBuiltinResult> {
+  const res = await axios.post<SyncBuiltinResult>(
+    '/api/v1/policies/sync-builtin',
+    null,
+    { headers: authHeader() },
+  )
+  return res.data
 }
