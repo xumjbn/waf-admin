@@ -83,3 +83,51 @@ export async function queryRealtime(q: RealtimeQuery): Promise<MetricPoint[]> {
     ts: m.ts,
   }))
 }
+
+// --- KPI snapshot（NW · 02 仪表盘顶部 5 张卡）
+
+export interface KPISnapshot {
+  blockedToday: number
+  totalRequestsToday: number
+  avgLatencyMs: number
+  blockedRatePct: number
+  activeHighAlerts: number
+  sparkBlocked: number[]
+  sparkRequests: number[]
+  sparkLatency: number[]
+  sparkBlockRate: number[]
+  sparkAlerts: number[]
+  generatedAt: string
+}
+
+interface BackendKPI {
+  blocked_today: number
+  total_requests_today: number
+  avg_latency_ms: number
+  blocked_rate_pct: number
+  active_high_alerts: number
+  spark_blocked: number[]
+  spark_requests: number[]
+  spark_latency: number[]
+  spark_block_rate: number[]
+  spark_alerts: number[]
+  generated_at: string
+}
+
+export async function fetchKpiSnapshot(): Promise<KPISnapshot> {
+  const res = await axios.get<BackendKPI>('/api/v1/monitor/kpi', { headers: authHeader() })
+  const b = res.data
+  return {
+    blockedToday: b.blocked_today,
+    totalRequestsToday: b.total_requests_today,
+    avgLatencyMs: b.avg_latency_ms,
+    blockedRatePct: b.blocked_rate_pct,
+    activeHighAlerts: b.active_high_alerts,
+    sparkBlocked: b.spark_blocked ?? [],
+    sparkRequests: b.spark_requests ?? [],
+    sparkLatency: b.spark_latency ?? [],
+    sparkBlockRate: b.spark_block_rate ?? [],
+    sparkAlerts: b.spark_alerts ?? [],
+    generatedAt: b.generated_at,
+  }
+}
