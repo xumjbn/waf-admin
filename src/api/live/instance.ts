@@ -266,6 +266,70 @@ export async function restartInstance(hostname: string, reason?: string): Promis
   )
 }
 
+/** 详情页用：拿单个实例。后端 /instances/detail 用 hostname 索引，
+ *  这里允许传 id 或 hostname；先用 /instances/detail，404 时回退到 list 找 id 匹配。 */
+export async function getInstance(idOrHostname: string): Promise<Instance | null> {
+  // 优先用 hostname 端点
+  try {
+    const res = await axios.get<BackendInstance>('/api/v1/instances/detail', {
+      headers: authHeader(),
+      params: { hostname: idOrHostname },
+    })
+    return adaptInstance(res.data, new Map())
+  } catch {
+    // 回退：列表里按 id 找
+    const all = await listInstances()
+    return all.find(i => i.id === idOrHostname) ?? null
+  }
+}
+
+/** 操作日志（实例详情『操作历史』Tab）。可按 path 子串过滤 */
+export interface OperationLogRow {
+  id: number
+  username: string
+  method: string
+  path: string
+  statusCode: number
+  durationMs: number
+  clientIP: string
+  createdAt: string
+}
+
+interface BackendOplog {
+  id: number
+  username: string
+  method: string
+  path: string
+  status_code: number
+  duration_ms: number
+  client_ip?: string | null
+  created_at: string
+}
+
+export async function listOperationLogs(params: {
+  pathContains?: string
+  pageSize?: number
+}): Promise<OperationLogRow[]> {
+  const res = await axios.get<{ data: BackendOplog[]; total: number }>('/api/v1/operation-logs', {
+    headers: authHeader(),
+    params: {
+      path: params.pathContains ?? '',
+      page: 1,
+      page_size: params.pageSize ?? 20,
+    },
+  })
+  return (res.data.data ?? []).map(b => ({
+    id: b.id,
+    username: b.username,
+    method: b.method,
+    path: b.path,
+    statusCode: b.status_code,
+    durationMs: b.duration_ms,
+    clientIP: b.client_ip ?? '—',
+    createdAt: b.created_at,
+  }))
+}
+
 export async function registerNodeIntent(payload: {
   hostname: string
   ip?: string

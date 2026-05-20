@@ -322,7 +322,11 @@ function RuleEngine({
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: '32px 60px 1.6fr 1fr 1fr 1fr 0.8fr 1.1fr',
+              // 与设计稿 docs/ui/pages/protection.jsx 对齐：
+              // 把『匹配模式』收窄到 minmax(0, 180px)，长 regex 在单元格内 ellipsis，
+              // 后面列固定宽度，再也不会被推歪
+              gridTemplateColumns:
+                '28px 56px minmax(0, 1.4fr) 130px minmax(0, 180px) 100px 90px 130px',
               gap: 10,
               alignItems: 'center',
               padding: '10px 12px',
@@ -366,26 +370,42 @@ function RuleEngine({
               }}
               style={{
                 display: 'grid',
-                gridTemplateColumns: '32px 60px 1.6fr 1fr 1fr 1fr 0.8fr 1.1fr',
+                gridTemplateColumns:
+                  '28px 56px minmax(0, 1.4fr) 130px minmax(0, 180px) 100px 90px 130px',
                 gap: 10,
                 alignItems: 'center',
                 padding: '10px 12px',
                 borderBottom: '1px solid var(--line-2)',
                 cursor: 'grab',
                 background: dragOver === r.id ? 'rgba(168,85,247,.08)' : 'transparent',
-                borderLeft: dragOver === r.id ? '2px solid var(--brand-1)' : '2px solid transparent',
+                borderLeft:
+                  dragOver === r.id ? '2px solid var(--brand-1)' : '2px solid transparent',
               }}
             >
               <span style={{ color: 'var(--text-3)' }}>
                 <Icon name="grip" size={14} />
               </span>
-              <span className="mono fs-12 t-brand fw-700">
+              <span
+                className="mono fs-11 fw-700"
+                style={{
+                  textAlign: 'center',
+                  color: 'var(--brand-1)',
+                  background: 'rgba(168,85,247,.10)',
+                  padding: '3px 6px',
+                  borderRadius: 4,
+                }}
+              >
                 #{String(r.priority).padStart(2, '0')}
               </span>
               <div style={{ minWidth: 0 }}>
                 <div
                   className="fw-600 text-0 fs-13"
-                  style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  style={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title={r.name}
                 >
                   {r.name}
                   {r.builtin && (
@@ -394,13 +414,45 @@ function RuleEngine({
                     </Tag>
                   )}
                 </div>
-                <div className="muted fs-11 mono">
+                <div
+                  className="muted fs-11 mono"
+                  style={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
                   {r.scope} · {r.id}
                 </div>
               </div>
-              <div className="mono fs-11">{r.field}</div>
-              <div className="fs-11">
-                <Tag kind="def">{r.match}</Tag>
+              <div
+                className="mono fs-11"
+                style={{
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  minWidth: 0,
+                }}
+                title={r.field}
+              >
+                {r.field}
+              </div>
+              <div
+                className="mono fs-11"
+                style={{
+                  minWidth: 0,
+                  padding: '3px 8px',
+                  background: 'var(--bg-2)',
+                  border: '1px solid var(--line)',
+                  borderRadius: 4,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  color: 'var(--text-1)',
+                }}
+                title={r.match}
+              >
+                {r.match}
               </div>
               <div>
                 <Tag

@@ -153,13 +153,13 @@ function TopologyView({
           </filter>
         </defs>
 
-        <text x="100" y="32" fill="#8e84a3" fontSize="11" fontFamily="JetBrains Mono" letterSpacing="2">
+        <text x="100" y="32" style={{ fill: 'var(--text-2)' }} fontSize="11" fontFamily="JetBrains Mono" letterSpacing="2">
           INTERNET / CLIENT
         </text>
-        <text x="430" y="32" fill="#a855f7" fontSize="11" fontFamily="JetBrains Mono" letterSpacing="2">
+        <text x="430" y="32" style={{ fill: 'var(--brand-1)' }} fontSize="11" fontFamily="JetBrains Mono" letterSpacing="2">
           NEBULAWAF · 防护层
         </text>
-        <text x="780" y="32" fill="#8e84a3" fontSize="11" fontFamily="JetBrains Mono" letterSpacing="2">
+        <text x="780" y="32" style={{ fill: 'var(--text-2)' }} fontSize="11" fontFamily="JetBrains Mono" letterSpacing="2">
           UPSTREAM / 业务
         </text>
 
@@ -170,13 +170,13 @@ function TopologyView({
         <g transform="translate(100, 240)">
           <circle r="56" fill="rgba(168,85,247,.05)" stroke="rgba(168,85,247,.3)" strokeDasharray="3 3" />
           <circle r="42" fill="rgba(34,211,238,.06)" stroke="rgba(34,211,238,.25)" />
-          <text textAnchor="middle" y="-6" fill="#cdc2e0" fontSize="11" fontFamily="JetBrains Mono">
+          <text textAnchor="middle" y="-6" style={{ fill: 'var(--text-1)' }} fontSize="11" fontFamily="JetBrains Mono">
             INTERNET
           </text>
-          <text textAnchor="middle" y="10" fill="#22d3ee" fontSize="20" fontWeight="700">
+          <text textAnchor="middle" y="10" style={{ fill: 'var(--brand-c)' }} fontSize="20" fontWeight="700">
             ∞
           </text>
-          <text textAnchor="middle" y="28" fill="#5d556e" fontSize="9" fontFamily="JetBrains Mono">
+          <text textAnchor="middle" y="28" style={{ fill: 'var(--text-3)' }} fontSize="9" fontFamily="JetBrains Mono">
             56.3K QPS
           </text>
         </g>
@@ -191,18 +191,18 @@ function TopologyView({
                 width="180"
                 height="64"
                 rx="10"
-                fill="rgba(20,16,32,.7)"
+                style={{ fill: 'var(--bg-2)', fillOpacity: 0.85 }}
                 stroke={cl.state === 'ok' ? 'rgba(168,85,247,.5)' : 'rgba(245,158,11,.6)'}
                 strokeWidth="1.5"
               />
               <circle r="50" fill="url(#nodeGlow)" opacity={cl.state === 'ok' ? 0.35 : 0.15} />
-              <text x="-42" y="-6" fill="#f3eaff" fontSize="12" fontWeight="700">
+              <text x="-42" y="-6" style={{ fill: 'var(--text-0)' }} fontSize="12" fontWeight="700">
                 {cl.name}
               </text>
-              <text x="-42" y="10" fill="#8e84a3" fontSize="10" fontFamily="JetBrains Mono">
+              <text x="-42" y="10" style={{ fill: 'var(--text-2)' }} fontSize="10" fontFamily="JetBrains Mono">
                 VIP {cl.vip}
               </text>
-              <text x="-42" y="24" fill="#a855f7" fontSize="9.5" fontFamily="JetBrains Mono">
+              <text x="-42" y="24" style={{ fill: 'var(--brand-1)' }} fontSize="9.5" fontFamily="JetBrains Mono">
                 {cl.nodes} 节点 · {cl.algo}
               </text>
               <circle cx="74" cy="-18" r="4" fill={cl.state === 'ok' ? '#10b981' : '#f59e0b'}>
@@ -251,21 +251,25 @@ function TopologyView({
                   width="160"
                   height="44"
                   rx="8"
-                  fill={isSel ? 'rgba(236,72,153,.10)' : 'rgba(20,16,32,.7)'}
+                  style={
+                    isSel
+                      ? { fill: 'rgba(236,72,153,.10)' }
+                      : { fill: 'var(--bg-2)', fillOpacity: 0.85 }
+                  }
                   stroke={isSel ? '#ec4899' : 'rgba(168,85,247,.25)'}
                   strokeWidth="1.2"
                   filter={isSel ? 'url(#glow)' : 'none'}
                 />
-                <text x="-8" y="-3" fill="#f3eaff" fontSize="11" fontWeight="600">
+                <text x="-8" y="-3" style={{ fill: 'var(--text-0)' }} fontSize="11" fontWeight="600">
                   {s.name}
                 </text>
-                <text x="-8" y="12" fill="#8e84a3" fontSize="9.5" fontFamily="JetBrains Mono">
+                <text x="-8" y="12" style={{ fill: 'var(--text-2)' }} fontSize="9.5" fontFamily="JetBrains Mono">
                   {s.domain}
                 </text>
-                <text x="100" y="-3" fill="#22d3ee" fontSize="10" fontFamily="JetBrains Mono" textAnchor="end">
+                <text x="100" y="-3" style={{ fill: 'var(--brand-c)' }} fontSize="10" fontFamily="JetBrains Mono" textAnchor="end">
                   {s.rps}
                 </text>
-                <text x="100" y="9" fill="#5d556e" fontSize="8" textAnchor="end">
+                <text x="100" y="9" style={{ fill: 'var(--text-3)' }} fontSize="8" textAnchor="end">
                   QPS
                 </text>
                 <circle
@@ -285,24 +289,26 @@ function TopologyView({
           position: 'absolute',
           bottom: 14,
           right: 14,
-          background: 'rgba(13,10,24,.85)',
+          background: 'var(--bg-1)',
           backdropFilter: 'blur(10px)',
-          border: '1px solid var(--line)',
+          border: '1px solid var(--line-strong)',
           borderRadius: 10,
           padding: '10px 12px',
           fontSize: 11,
           fontFamily: 'JetBrains Mono',
+          color: 'var(--text-1)',
           display: 'flex',
           flexDirection: 'column',
           gap: 4,
+          boxShadow: '0 4px 16px rgba(0,0,0,.08)',
         }}
       >
         <div className="flex items-center gap-2">
-          <span style={{ width: 8, height: 2, background: '#a855f7' }} />
+          <span style={{ width: 8, height: 2, background: 'var(--brand-1)' }} />
           客户端 → WAF
         </div>
         <div className="flex items-center gap-2">
-          <span style={{ width: 8, height: 2, background: '#22d3ee' }} />
+          <span style={{ width: 8, height: 2, background: 'var(--brand-c)' }} />
           WAF → 业务
         </div>
         <div className="flex items-center gap-2">
