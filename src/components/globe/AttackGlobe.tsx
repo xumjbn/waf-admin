@@ -1,13 +1,17 @@
-// 全球攻击轨迹（dashboard 首页 /aggregation 用）
+// 全球攻击轨迹（dashboard 首页 /aggregation）
 //
-// 渲染：echarts + echarts-gl 的 globe 系列（3D 地球）。
-// - 按 body[data-theme='light'|'dark'] 切换调色板，浅色模式背景为浅
-// - shading='lambert' + regionHeight=3，让国家相对海洋"凸起"可见
-// - 自动旋转 / 鼠标拖拽 / 滚轮缩放（min 120 max 320）
-// - 全屏由父组件通过 ref 控制；自身组件保留 prop fullscreen 用于自适应高度
-// - 渲染失败用 ErrorBoundary 兜底
+// 实现：globe.gl（three.js 封装）—— 参考 https://globe.gl/example/random-arcs/
 //
-// 数据：dashboard 拉真 attack_logs → 传 attacks prop（含 lat/lng/country/typeColor）。
+// 三层数据：
+//   · polygonsData ：public/maps/world.json 国家轮廓，作为大陆显示（不用图片纹理）
+//   · arcsData     ：攻击源 → HQ 弧线，颜色取自 attack.typeColor
+//   · pointsData   ：单 IP 散点（小亮点）
+//   · labelsData   ：Top 30 高频 IP 文本标签
+//
+// 交互：autoRotate 默认开 / 鼠标拖拽旋转 / 滚轮缩放（globe.gl 内置）
+// 主题：按 body[data-theme] 切两套调色板，MutationObserver 监听运行时切换。
+// 异常：ErrorBoundary + 降级占位条。
+// 全屏：forwardRef 暴露 toggleFullscreen() 给父组件。
 
 import {
   Component,
@@ -19,44 +23,24 @@ import {
   useState,
 } from 'react'
 import type { ErrorInfo, ReactNode } from 'react'
-import ReactECharts from 'echarts-for-react'
-import * as echarts from 'echarts'
-import 'echarts-gl'
-import type { EChartsOption } from 'echarts'
+import Globe from 'globe.gl'
+import type { GlobeInstance } from 'globe.gl'
 import type { AttackEvent } from '@/mocks/nebula'
-
-let worldRegistered = false
-async function ensureWorldMap(): Promise<boolean> {
-  if (worldRegistered) return true
-  try {
-    const res = await fetch('/maps/world.json')
-    const json = await res.json()
-    if (json?.type === 'FeatureCollection' && Array.isArray(json.features)) {
-      json.features = json.features.map((f: { type?: string }) => ({ ...f, type: 'Feature' }))
-    }
-    if (json?.crs) delete json.crs
-    echarts.registerMap('world', json)
-    worldRegistered = true
-    return true
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn('[AttackGlobe] world.json load failed', e)
-    return false
-  }
-}
 
 const HQ = { lat: 32.0, lng: 116.0, name: '防护中心' }
 
-// 浅/深主题对应的两套调色板
 interface Palette {
-  environment: string // 球外的星空/背景纯色
-  baseColor: string   // 海洋（基础球面）
-  regionColor: string // 大陆（凸起部分）默认颜色
+  background: string         // 容器 + globe 背景
+  globeColor: string         // 球底（海洋）
+  polygonCap: string         // 大陆色
+  polygonSide: string        // 大陆侧面
+  polygonStroke: string      // 国界线
   atmosphere: string
-  ambient: string
-  arc: string         // lines3D 弧线
-  ipPoint: string     // scatter3D 单 IP
-  hqPoint: string     // 防护中心
+  arcDefault: string
+  pointColor: string
+  hqColor: string
+  labelColor: string
+  labelBg: string
   textHud: string
 }
 function getPalette(): Palette {
@@ -64,26 +48,32 @@ function getPalette(): Palette {
     typeof document !== 'undefined' ? document.body.dataset.theme || 'dark' : 'dark'
   if (theme === 'light') {
     return {
-      environment: '#eef2f8',
-      baseColor: '#bcd0e6',   // 浅蓝海洋
-      regionColor: '#7a8db3', // 深一档的大陆
+      background: '#eef2f8',
+      globeColor: '#bcd0e6',
+      polygonCap: '#7a8db3',
+      polygonSide: 'rgba(91, 33, 182, 0.15)',
+      polygonStroke: '#5b6b8d',
       atmosphere: '#a855f7',
-      ambient: '#c4b5fd',
-      arc: '#a855f7',
-      ipPoint: '#ec4899',
-      hqPoint: '#0ea5e9',
+      arcDefault: '#a855f7',
+      pointColor: '#ec4899',
+      hqColor: '#0ea5e9',
+      labelColor: '#1a0b2e',
+      labelBg: 'rgba(255,255,255,.88)',
       textHud: '#3b3052',
     }
   }
   return {
-    environment: '#0a0518',
-    baseColor: '#0f1626',
-    regionColor: '#2a1f4a',
+    background: '#0a0518',
+    globeColor: '#0f1626',
+    polygonCap: '#2a1f4a',
+    polygonSide: 'rgba(168, 85, 247, 0.15)',
+    polygonStroke: '#5b3fa3',
     atmosphere: '#a855f7',
-    ambient: '#a855f7',
-    arc: '#a855f7',
-    ipPoint: '#ec4899',
-    hqPoint: '#22d3ee',
+    arcDefault: '#a855f7',
+    pointColor: '#ec4899',
+    hqColor: '#22d3ee',
+    labelColor: '#fef3c7',
+    labelBg: 'rgba(13,10,24,.78)',
     textHud: '#cdc2e0',
   }
 }
@@ -92,24 +82,19 @@ export interface AttackGlobeProps {
   attacks: AttackEvent[]
   height?: number
   autoRotate?: boolean
-  autoRotateSpeed?: number
+  autoRotateSpeed?: number       // 度/秒，对应 controls.autoRotateSpeed（globe.gl 默认 2）
 }
 
 export interface AttackGlobeHandle {
-  /** 切到/退出浏览器全屏（绑容器 div） */
   toggleFullscreen: () => void
 }
 
-interface GlobeBoundaryState {
-  hasError: boolean
-  msg: string
-}
 class GlobeErrorBoundary extends Component<
   { fallback: ReactNode; children: ReactNode },
-  GlobeBoundaryState
+  { hasError: boolean; msg: string }
 > {
-  state: GlobeBoundaryState = { hasError: false, msg: '' }
-  static getDerivedStateFromError(err: unknown): GlobeBoundaryState {
+  state = { hasError: false, msg: '' }
+  static getDerivedStateFromError(err: unknown) {
     return { hasError: true, msg: err instanceof Error ? err.message : String(err) }
   }
   componentDidCatch(err: Error, info: ErrorInfo) {
@@ -151,31 +136,60 @@ function GlobeFallback({ height }: { height: number }) {
       <div>
         <div className="fw-700 mb-2">3D 地球渲染失败</div>
         <div className="muted fs-12">
-          浏览器可能未启用 WebGL，或 echarts-gl 与当前 echarts 版本不兼容。
-          <br />
-          实例与攻击日志数据不受影响。
+          浏览器可能未启用 WebGL；数据其他面板不受影响。
         </div>
       </div>
     </div>
   )
 }
 
+// 缓存 world geojson —— 整个 SPA 内存里只读一次
+let worldGeoCache: { features: unknown[] } | null = null
+async function loadWorld(): Promise<{ features: unknown[] }> {
+  if (worldGeoCache) return worldGeoCache
+  const res = await fetch('/maps/world.json')
+  const json = await res.json()
+  worldGeoCache = { features: Array.isArray(json.features) ? json.features : [] }
+  return worldGeoCache
+}
+
+interface Arc {
+  startLat: number
+  startLng: number
+  endLat: number
+  endLng: number
+  color: string
+}
+interface Point {
+  lat: number
+  lng: number
+  size: number
+  color: string
+  label: string
+}
+interface Label {
+  lat: number
+  lng: number
+  text: string
+  size: number
+}
+
 function GlobeInner({
   attacks,
   height = 460,
   autoRotate = true,
-  autoRotateSpeed = 6,
+  autoRotateSpeed = 0.5,
   fwdRef,
 }: AttackGlobeProps & { fwdRef: React.Ref<AttackGlobeHandle> }) {
   const wrapRef = useRef<HTMLDivElement | null>(null)
-  const [mapReady, setMapReady] = useState(false)
+  const globeRef = useRef<GlobeInstance | null>(null)
   const [paletteKey, setPaletteKey] = useState<'light' | 'dark'>(() =>
     typeof document !== 'undefined' && document.body.dataset.theme === 'light'
       ? 'light'
       : 'dark',
   )
 
-  // 监听 body[data-theme] 变化（用户切换主题时立即重绘）
+  // 监听 body[data-theme] 切换
   useEffect(() => {
     const obs = new MutationObserver(() => {
       const t = document.body.dataset.theme === 'light' ? 'light' : 'dark'
@@ -185,11 +199,68 @@ function GlobeInner({
     return () => obs.disconnect()
   }, [])
 
-  useEffect(() => {
-    ensureWorldMap().then(setMapReady)
-  }, [])
+  const palette = useMemo(() => getPalette(), [paletteKey])
 
-  // 暴露 toggleFullscreen 给父组件（dashboard 上 Card 的『全屏』按钮）
+  // 把 attacks → arcs / points / labels
+  const { arcs, points, labels } = useMemo(() => {
+    const arcs: Arc[] = []
+    const points: Point[] = []
+    const byIp = new Map<
+      string,
+      { ip: string; country: string; lat: number; lng: number; count: number }
+    >()
+
+    for (const a of attacks) {
+      if (!a || typeof a.lat !== 'number' || typeof a.lng !== 'number') continue
+      if (a.lat === 0 && a.lng === 0) continue
+      const color = a.typeColor || palette.arcDefault
+      arcs.push({
+        startLat: a.lat,
+        startLng: a.lng,
+        endLat: HQ.lat,
+        endLng: HQ.lng,
+        color,
+      })
+      const ip = a.ip || '—'
+      const existing = byIp.get(ip)
+      if (existing) {
+        existing.count++
+      } else {
+        byIp.set(ip, {
+          ip,
+          country: a.country || '未知',
+          lat: a.lat,
+          lng: a.lng,
+          count: 1,
+        })
+      }
+    }
+
+    byIp.forEach(v => {
+      points.push({
+        lat: v.lat,
+        lng: v.lng,
+        size: Math.min(0.35, 0.06 + Math.log2(v.count + 1) * 0.05),
+        color: palette.pointColor,
+        label: `${v.country} · ${v.ip}${v.count > 1 ? `  ×${v.count}` : ''}`,
+      })
+    })
+
+    // Top 30 IP 永久显示标签
+    const labels: Label[] = Array.from(byIp.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 30)
+      .map(v => ({
+        lat: v.lat,
+        lng: v.lng,
+        text: `${v.ip}${v.count > 1 ? ` ×${v.count}` : ''}`,
+        size: 0.4,
+      }))
+
+    return { arcs: arcs.slice(0, 500), points, labels }
+  }, [attacks, palette.arcDefault, palette.pointColor])
+
+  // 暴露 toggleFullscreen
   useImperativeHandle(
     fwdRef,
     () => ({
@@ -209,267 +280,160 @@ function GlobeInner({
     [],
   )
 
-  const palette = useMemo(() => getPalette(), [paletteKey])
+  // 初始化 globe（一次）
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
 
-  const { ipPoints, topIpLabels, countryAgg, arcs } = useMemo(() => {
-    const ipPoints: Array<{ name: string; value: [number, number, number] }> = []
-    const byCountry = new Map<string, { count: number; sumLat: number; sumLng: number }>()
-    const byIp = new Map<
-      string,
-      { ip: string; country: string; lat: number; lng: number; count: number }
-    >()
-    const arcs: Array<{ coords: [[number, number], [number, number]] }> = []
-
-    for (const a of attacks) {
-      if (!a || typeof a.lat !== 'number' || typeof a.lng !== 'number') continue
-      if (a.lat === 0 && a.lng === 0) continue
-      const ip = a.ip || '—'
-      ipPoints.push({
-        name: `${a.country || '未知'} · ${ip}`,
-        value: [a.lng, a.lat, 1],
-      })
-
-      const existing = byIp.get(ip)
-      if (existing) {
-        existing.count++
-      } else {
-        byIp.set(ip, {
-          ip,
-          country: a.country || '未知',
-          lat: a.lat,
-          lng: a.lng,
-          count: 1,
-        })
-      }
-
-      const k = a.country || '未知'
-      const cur = byCountry.get(k) ?? { count: 0, sumLat: 0, sumLng: 0 }
-      cur.count++
-      cur.sumLat += a.lat
-      cur.sumLng += a.lng
-      byCountry.set(k, cur)
-
-      arcs.push({
-        coords: [
-          [a.lng, a.lat],
-          [HQ.lng, HQ.lat],
-        ],
-      })
+    let cancelled = false
+    // globe.gl 在 TS 下用 new Globe(el)；旧 JS 文档里的 Globe()(el) 等价但 d.ts 不支持
+    const inst = new Globe(el)
+      .width(el.clientWidth)
+      .height(el.clientHeight)
+      .backgroundColor(palette.background)
+      .showAtmosphere(true)
+      .atmosphereColor(palette.atmosphere)
+      .atmosphereAltitude(0.18)
+      .showGlobe(true)
+      .showGraticules(false)
+    // globe.gl 球面默认材质：globeMaterial().color
+    const mat = inst.globeMaterial() as { color: { set: (c: string) => void } }
+    if (mat && mat.color && typeof mat.color.set === 'function') {
+      mat.color.set(palette.globeColor)
     }
 
-    const countryAgg: Array<{ name: string; value: [number, number, number] }> = []
-    byCountry.forEach((v, k) => {
-      countryAgg.push({
-        name: `${k} · ${v.count} 次`,
-        value: [v.sumLng / v.count, v.sumLat / v.count, v.count],
-      })
+    globeRef.current = inst
+
+    // 装大陆轮廓 polygons
+    loadWorld().then(world => {
+      if (cancelled || !globeRef.current) return
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const g = globeRef.current as any
+      g.polygonsData(world.features)
+        .polygonAltitude(0.006)
+        .polygonCapColor(() => palette.polygonCap)
+        .polygonSideColor(() => palette.polygonSide)
+        .polygonStrokeColor(() => palette.polygonStroke)
+        .polygonsTransitionDuration(0)
+      /* eslint-enable @typescript-eslint/no-explicit-any */
     })
 
-    // Top N 攻击源 IP，永远显示标签（不限于悬停）。
-    // 取前 30 个 IP（按命中次数降序），避免几百个 label 互相重叠不可读。
-    const topIpLabels = Array.from(byIp.values())
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 30)
-      .map(v => ({
-        name: `${v.ip}${v.count > 1 ? `  ×${v.count}` : ''}`,
-        value: [v.lng, v.lat, 1],
-      }))
+    // 控制器：自动旋转 + 缩放
+    const controls = inst.controls() as unknown as {
+      autoRotate: boolean
+      autoRotateSpeed: number
+      enableZoom: boolean
+      enablePan: boolean
+    }
+    controls.autoRotate = autoRotate
+    controls.autoRotateSpeed = autoRotateSpeed
+    controls.enableZoom = true
+    controls.enablePan = false
 
-    return { ipPoints, topIpLabels, countryAgg, arcs: arcs.slice(0, 200) }
-  }, [attacks])
+    // 初始视角对准 HQ
+    inst.pointOfView({ lat: HQ.lat, lng: HQ.lng, altitude: 2.3 }, 0)
 
-  const option = useMemo<EChartsOption>(
-    () =>
-      ({
-        backgroundColor: palette.environment,
-        tooltip: {
-          show: true,
-          backgroundColor:
-            paletteKey === 'light' ? 'rgba(255,255,255,.95)' : 'rgba(13,10,24,.92)',
-          borderColor: 'rgba(168,85,247,.4)',
-          textStyle: { color: palette.textHud, fontSize: 12 },
-        },
-        globe: {
-          environment: palette.environment,
-          baseColor: palette.baseColor,
-          // lambert shading：海洋(baseColor) 与 陆地(regionHeight 抬起的高度) 通过
-          // 光照差异显形。'color' 模式所有区域全是 baseColor，看不到大陆轮廓。
-          shading: 'lambert',
-          atmosphere: {
-            show: true,
-            offset: 4,
-            color: palette.atmosphere,
-            glowPower: 4,
-            innerGlowPower: 2,
-          },
-          light: {
-            main: {
-              color: '#ffffff',
-              intensity: paletteKey === 'light' ? 1.4 : 1.1,
-              alpha: 40,
-              beta: 30,
-              shadow: false,
-            },
-            ambient: { color: palette.ambient, intensity: 0.4 },
-          },
-          viewControl: {
-            autoRotate,
-            autoRotateSpeed,
-            autoRotateAfterStill: 4,
-            distance: 200,
-            minDistance: 120,
-            maxDistance: 320,
-            alpha: 15,
-            beta: 30,
-            damping: 0.85,
-            rotateSensitivity: 1,
-            zoomSensitivity: 1.4,
-            targetCoord: [HQ.lng, HQ.lat],
-          },
-          ...(mapReady
-            ? {
-                map: 'world',
-                // 关键：抬高大陆，配合 lambert 让国家可见
-                regionHeight: 3,
-                itemStyle: {
-                  color: palette.regionColor,
-                  borderWidth: 0.5,
-                  borderColor: paletteKey === 'light' ? '#5b6b8d' : '#5b3fa3',
-                },
-                emphasis: {
-                  itemStyle: {
-                    color: '#f59e0b',
-                  },
-                },
-              }
-            : {}),
-        },
-        series: [
-          {
-            name: '国家攻击聚合',
-            type: 'bar3D',
-            coordinateSystem: 'globe',
-            data: countryAgg,
-            barSize: 0.6,
-            minHeight: 0.8,
-            itemStyle: { color: '#f59e0b', opacity: 0.9 },
-            shading: 'color',
-            emphasis: {
-              itemStyle: { color: '#fbbf24' },
-              label: { show: true, textStyle: { color: '#fff', fontSize: 12 } },
-            },
-          },
-          {
-            name: '攻击源 IP',
-            type: 'scatter3D',
-            coordinateSystem: 'globe',
-            blendMode: 'lighter',
-            symbolSize: 6,
-            itemStyle: { opacity: 0.85, borderWidth: 0 },
-            color: palette.ipPoint,
-            data: ipPoints,
-            // 悬停时高亮 + 展示完整 country · IP
-            emphasis: {
-              label: {
-                show: true,
-                formatter: '{b}',
-                textStyle: {
-                  color: '#fff',
-                  fontSize: 11,
-                  backgroundColor: 'rgba(13,10,24,.85)',
-                  padding: [3, 6],
-                  borderRadius: 4,
-                },
-              },
-            },
-          },
-          // 永远显示标签的 Top 30 攻击源 IP（按命中次数）
-          {
-            name: '高频 IP 标签',
-            type: 'scatter3D',
-            coordinateSystem: 'globe',
-            blendMode: 'lighter',
-            symbolSize: 8,
-            itemStyle: { color: '#fbbf24', opacity: 1, borderColor: '#fff', borderWidth: 1 },
-            data: topIpLabels,
-            label: {
-              show: true,
-              position: 'right',
-              formatter: '{b}',
-              distance: 6,
-              textStyle: {
-                color: paletteKey === 'light' ? '#1a0b2e' : '#fef3c7',
-                fontSize: 10,
-                fontFamily: 'JetBrains Mono',
-                fontWeight: 600,
-                backgroundColor:
-                  paletteKey === 'light' ? 'rgba(255,255,255,.88)' : 'rgba(13,10,24,.78)',
-                padding: [2, 5],
-                borderRadius: 3,
-                borderWidth: 1,
-                borderColor:
-                  paletteKey === 'light' ? 'rgba(91,33,182,.18)' : 'rgba(168,85,247,.35)',
-              },
-            },
-          },
-          {
-            name: '攻击轨迹',
-            type: 'lines3D',
-            coordinateSystem: 'globe',
-            blendMode: 'lighter',
-            effect: {
-              show: true,
-              period: 2,
-              trailLength: 0.18,
-              trailWidth: 4,
-              trailOpacity: 0.9,
-              constantSpeed: 28,
-            },
-            lineStyle: { width: 1, opacity: 0.55, color: palette.arc },
-            data: arcs,
-          },
-          {
-            name: '防护中心',
-            type: 'scatter3D',
-            coordinateSystem: 'globe',
-            symbolSize: 14,
-            color: palette.hqPoint,
-            label: {
-              show: true,
-              formatter: HQ.name,
-              textStyle: {
-                color: palette.hqPoint,
-                fontSize: 11,
-                backgroundColor:
-                  paletteKey === 'light' ? 'rgba(255,255,255,.85)' : 'rgba(13,10,24,.7)',
-                padding: [3, 6],
-                borderRadius: 4,
-              },
-            },
-            data: [{ name: HQ.name, value: [HQ.lng, HQ.lat, 1] }],
-          },
-        ],
-      }) as unknown as EChartsOption,
-    [ipPoints, countryAgg, arcs, autoRotate, autoRotateSpeed, mapReady, palette, paletteKey],
-  )
+    // resize 观察器
+    const ro = new ResizeObserver(() => {
+      if (!globeRef.current) return
+      globeRef.current.width(el.clientWidth).height(el.clientHeight)
+    })
+    ro.observe(el)
 
-  // 全屏态下铺满整个视口
-  const containerStyle: React.CSSProperties = {
-    position: 'relative',
-    height,
-    background: palette.environment,
-    width: '100%',
-  }
+    return () => {
+      cancelled = true
+      ro.disconnect()
+      // globe.gl 没有显式 dispose，但置空 ref 让下一次 init 重建
+      try {
+        const renderer = (inst as unknown as { renderer?: () => { dispose?: () => void } })
+          .renderer?.()
+        renderer?.dispose?.()
+      } catch {
+        /* ignore */
+      }
+      globeRef.current = null
+      // 清掉残留 canvas，下次 mount 不会叠
+      while (el.firstChild) el.removeChild(el.firstChild)
+    }
+    // 主题切换、自动旋转开关会触发整体重建（这两个变化少见，重建可接受）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paletteKey, autoRotate, autoRotateSpeed])
+
+  // 数据更新 —— 不重建实例。globe.gl accessor 签名是 (obj: object) => T，
+  // 这里把 obj 当 Arc/Point/Label 用，强制 cast。
+  useEffect(() => {
+    const inst = globeRef.current
+    if (!inst) return
+    // 用 any 链式避免 globe.gl 的 ObjAccessor 与 Arc/Point/Label 类型不直接匹配
+    // 的麻烦；类型安全已经在 useMemo 数据构造侧保证。
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const g = inst as any
+
+    g.arcsData(arcs)
+      .arcStartLat((d: any) => (d as Arc).startLat)
+      .arcStartLng((d: any) => (d as Arc).startLng)
+      .arcEndLat((d: any) => (d as Arc).endLat)
+      .arcEndLng((d: any) => (d as Arc).endLng)
+      .arcColor((d: any) => [(d as Arc).color, palette.hqColor])
+      .arcStroke(0.45)
+      .arcAltitudeAutoScale(0.55)
+      .arcDashLength(0.5)
+      .arcDashGap(1.2)
+      .arcDashAnimateTime(2200)
+
+    g.pointsData(points)
+      .pointLat((d: any) => (d as Point).lat)
+      .pointLng((d: any) => (d as Point).lng)
+      .pointAltitude((d: any) => (d as Point).size)
+      .pointColor((d: any) => (d as Point).color)
+      .pointRadius(0.25)
+      .pointLabel((d: any) => (d as Point).label)
+      .pointsMerge(false)
+
+    g.labelsData(labels)
+      .labelLat((d: any) => (d as Label).lat)
+      .labelLng((d: any) => (d as Label).lng)
+      .labelText((d: any) => (d as Label).text)
+      .labelSize(() => 0.45)
+      .labelDotRadius(0.25)
+      .labelColor(() => palette.labelColor)
+      .labelResolution(2)
+
+    // HQ 单独画一个 HTML 角标
+    g.htmlElementsData([{ lat: HQ.lat, lng: HQ.lng, label: HQ.name }])
+      .htmlLat((d: any) => d.lat)
+      .htmlLng((d: any) => d.lng)
+      .htmlAltitude(0.02)
+      .htmlElement(() => {
+        const tpl = document.createElement('template')
+        tpl.innerHTML = `<div style="
+          display:inline-flex;align-items:center;gap:6px;
+          padding:4px 10px;border-radius:999px;
+          background:${palette.labelBg};
+          border:1px solid ${palette.hqColor};
+          color:${palette.hqColor};
+          font:600 11px/1 'JetBrains Mono', monospace;
+          white-space:nowrap;pointer-events:none;
+          box-shadow:0 0 12px ${palette.hqColor}88;
+        ">
+          <span style="width:6px;height:6px;border-radius:50%;background:${palette.hqColor}"></span>
+          ${HQ.name}
+        </div>`
+        return tpl.content.firstElementChild as HTMLElement
+      })
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+  }, [arcs, points, labels, palette])
 
   return (
-    <div ref={wrapRef} style={containerStyle}>
-      <ReactECharts
-        option={option}
-        notMerge
-        lazyUpdate
-        style={{ width: '100%', height: '100%' }}
-        opts={{ renderer: 'canvas' }}
-      />
+    <div
+      ref={wrapRef}
+      style={{
+        position: 'relative',
+        width: '100%',
+        height,
+        background: palette.background,
+      }}
+    >
       {/* HUD */}
       <div
         style={{
@@ -478,11 +442,12 @@ function GlobeInner({
           left: 14,
           fontSize: 11,
           color: palette.textHud,
-          opacity: 0.85,
+          opacity: 0.9,
           fontFamily: 'JetBrains Mono',
           letterSpacing: 1.2,
           textTransform: 'uppercase',
           pointerEvents: 'none',
+          zIndex: 2,
         }}
       >
         <div className="t-brand fw-700" style={{ fontSize: 12, marginBottom: 2 }}>
@@ -501,16 +466,17 @@ function GlobeInner({
           textAlign: 'right',
           fontSize: 11,
           color: palette.textHud,
-          opacity: 0.85,
+          opacity: 0.9,
           fontFamily: 'JetBrains Mono',
           pointerEvents: 'none',
+          zIndex: 2,
         }}
       >
         <div className="t-pink" style={{ fontWeight: 700, marginBottom: 2 }}>
           ● LIVE
         </div>
-        <div>POINTS {String(ipPoints.length).padStart(4, '0')}</div>
-        <div>COUNTRIES {countryAgg.length}</div>
+        <div>ARCS {String(arcs.length).padStart(4, '0')}</div>
+        <div>POINTS {points.length}</div>
       </div>
       <div
         style={{
@@ -519,14 +485,16 @@ function GlobeInner({
           right: 14,
           fontSize: 10,
           color: palette.textHud,
-          opacity: 0.7,
+          opacity: 0.75,
           fontFamily: 'JetBrains Mono',
           letterSpacing: 1,
           pointerEvents: 'none',
+          zIndex: 2,
         }}
       >
-        AUTO-ROT · DRAG TO ROTATE · WHEEL TO ZOOM · F / 全屏按钮
+        AUTO-ROT · DRAG · WHEEL ZOOM
       </div>
     </div>
   )
 }
+
