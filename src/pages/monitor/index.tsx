@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Card, Icon, KPI, Tag, Tabs, Button, cn } from '@/components/ui'
 import { AreaChart, BarChartH, BarsVertical, Gauge } from '@/components/charts'
 import { mkAttack, type AttackEvent } from '@/mocks/nebula'
+import * as monitorApi from '@/api/live/monitor'
 
 type FilterValue = 'all' | 'blocked' | 'challenged' | 'logged'
 
@@ -44,6 +45,20 @@ export default function PageMonitor() {
   const [events, setEvents] = useState<AttackEvent[]>(() =>
     Array.from({ length: 18 }, () => mkAttack()),
   )
+
+  // 预拉真实监控指标，供后续把 KPI/图组件切到真数据时使用
+  useEffect(() => {
+    monitorApi
+      .listMetrics()
+      .then(metrics => {
+        // eslint-disable-next-line no-console
+        if (metrics.length > 0) console.debug('[monitor] backend metrics', metrics)
+      })
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[monitor api]', err)
+      })
+  }, [])
 
   useEffect(() => {
     if (paused) return
