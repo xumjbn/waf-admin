@@ -1,7 +1,8 @@
 import { Card, Icon, KPI, Tag, Button, Toggle } from '@/components/ui'
-import { ALERTS } from '@/mocks/nebula'
-import { useState } from 'react'
+import type { Alert } from '@/mocks/nebula'
+import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import * as alertApi from '@/api/live/alert'
 import AlertPolicy from './AlertPolicy'
 
 function AlertsPage() {
@@ -13,6 +14,17 @@ function AlertsPage() {
     webhook: false,
     sms: false,
   })
+  const [alerts, setAlerts] = useState<Alert[]>([])
+
+  useEffect(() => {
+    alertApi
+      .listAlerts()
+      .then(setAlerts)
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[alert api]', err)
+      })
+  }, [])
 
   return (
     <>
@@ -54,7 +66,7 @@ function AlertsPage() {
             </tr>
           </thead>
           <tbody>
-            {ALERTS.map(a => (
+            {alerts.map(a => (
               <tr key={a.id}>
                 <td className="mono fs-12">{a.t}</td>
                 <td>
