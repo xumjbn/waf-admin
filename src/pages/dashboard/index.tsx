@@ -3,6 +3,7 @@ import { Card, Icon, KPI, Tag, Bar, Button } from '@/components/ui'
 import { AreaChart, BarChartH, Donut, Heatmap, Radar } from '@/components/charts'
 import { AttackGlobe } from '@/components/globe/AttackGlobe'
 import { INSTANCES, mkAttack, type AttackEvent } from '@/mocks/nebula'
+import * as logApi from '@/api/live/log'
 
 const HEATMAP_ROW_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 const HEATMAP_COL_LABELS = Array.from({ length: 24 }, (_, i) => `${i}h`)
@@ -106,6 +107,33 @@ export default function PageDashboard() {
       setEvents(prev => [mkAttack(), ...prev].slice(0, 7))
     }, 2200)
     return () => clearInterval(id)
+  }, [])
+
+  // 地球攻击轨迹：用真实攻击日志的 lat/lng/country 作为数据源。
+  // 拉最近 500 条 → 前端按 country 聚合给国家级柱子，单点照样保留。
+  // 拉失败/没数据时回退到 mkAttack() mock 让球面也别空着。
+  const [globeAttacks, setGlobeAttacks] = useState<AttackEvent[]>([])
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const { items } = await logApi.listAttackLogs({ pageSize: 500 })
+        if (cancelled) return
+        if (items.length === 0) {
+          setGlobeAttacks(Array.from({ length: 50 }, () => mkAttack()))
+        } else {
+          setGlobeAttacks(items)
+        }
+      } catch {
+        if (!cancelled) setGlobeAttacks(Array.from({ length: 50 }, () => mkAttack()))
+      }
+    }
+    load()
+    const id = setInterval(load, 30_000) // 30s 刷新
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
   }, [])
 
   return (
@@ -219,7 +247,7 @@ export default function PageDashboard() {
           }
           bodyClass="np"
         >
-          <AttackGlobe height={480} />
+          <AttackGlobe height={480} attacks={globeAttacks} />
         </Card>
 
         <div className="stack">
