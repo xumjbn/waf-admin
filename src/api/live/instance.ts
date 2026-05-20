@@ -176,26 +176,56 @@ export async function listInstances(clusters?: Cluster[]): Promise<Instance[]> {
   return (res.data.instances ?? []).map(b => adaptInstance(b, clusterByNode))
 }
 
-/** 通过详细列表（含 node_ids）建立 node → cluster 名映射并返回实例。*/
+/** 通过详细列表（含 node_ids）建立 node → cluster 名映射并返回实例。
+ * 任何一边失败都不连累另一边：clusters 500 仍然返回 instances，反之亦然。
+ * errors 字段带回各自错误，由 UI 决定显示形式。*/
 export async function listInstancesWithClusterMap(): Promise<{
   instances: Instance[]
   clusters: Cluster[]
+  errors: { instances?: string; clusters?: string }
 }> {
-  // 一并拉，避免实例页两次往返。
-  const [clRes, inRes] = await Promise.all([
-    axios.get<{ clusters: BackendCluster[] }>('/api/v1/clusters', { headers: authHeader() }),
-    axios.get<{ instances: BackendInstance[] }>('/api/v1/instances', { headers: authHeader() }),
+  const [clSettled, inSettled] = await Promise.all([
+    axios
+      .get<{ clusters: BackendCluster[] }>('/api/v1/clusters', { headers: authHeader() })
+      .then(r => ({ ok: true as const, data: r.data.clusters ?? [] }))
+      .catch((e: unknown) => ({
+        ok: false as const,
+        error: e instanceof Error ? e.message : String(e),
+      })),
+    axios
+      .get<{ instances: BackendInstance[] }>('/api/v1/instances', { headers: authHeader() })
+      .then(r => ({ ok: true as const, data: r.data.instances ?? [] }))
+      .catch((e: unknown) => ({
+        ok: false as const,
+        error: e instanceof Error ? e.message : String(e),
+      })),
   ])
-  const backendClusters = clRes.data.clusters ?? []
+
+  const backendClusters = clSettled.ok ? clSettled.data : []
   const clusterByNode = new Map<string, string>()
   for (const c of backendClusters) {
     for (const nid of c.node_ids || []) {
       clusterByNode.set(nid, c.name)
     }
   }
+  const backendInstances = inSettled.ok ? inSettled.data : []
+
   return {
     clusters: backendClusters.map(adaptCluster),
-    instances: (inRes.data.instances ?? []).map(b => adaptInstance(b, clusterByNode)),
+    instances: backendInstances.map(b => adaptInstance(b, clusterByNode)),
+    errors: {
+      clusters: clSettled.ok ? undefined : clSettled.error,
+      instances: inSettled.ok ? undefined : inSettled.error,
+    },
+  }
+}
+
+/** listHAGroups 的安全包装：失败时返回空数组 + 错误描述。 */
+export async function listHAGroupsSafe(): Promise<{ rows: HAGroupRow[]; error?: string }> {
+  try {
+    return { rows: await listHAGroups() }
+  } catch (e: unknown) {
+    return { rows: [], error: e instanceof Error ? e.message : String(e) }
   }
 }
 

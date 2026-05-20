@@ -14,27 +14,27 @@ function InstancesPage() {
   const [filterCluster, setFilterCluster] = useState<string>('')
   const [keyword, setKeyword] = useState<string>('')
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [errors, setErrors] = useState<{
+    instances?: string
+    clusters?: string
+    ha?: string
+  }>({})
 
   const refresh = async () => {
     setLoading(true)
-    setError(null)
-    try {
-      const [{ instances, clusters: cl }, ha] = await Promise.all([
-        instanceApi.listInstancesWithClusterMap(),
-        instanceApi.listHAGroups(),
-      ])
-      setList(instances)
-      setClusters(cl)
-      setHAGroups(ha)
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setError(msg)
-      // eslint-disable-next-line no-console
-      console.error('[instance api]', err)
-    } finally {
-      setLoading(false)
-    }
+    const [{ instances, clusters: cl, errors: cmErr }, haSafe] = await Promise.all([
+      instanceApi.listInstancesWithClusterMap(),
+      instanceApi.listHAGroupsSafe(),
+    ])
+    setList(instances)
+    setClusters(cl)
+    setHAGroups(haSafe.rows)
+    setErrors({
+      instances: cmErr.instances,
+      clusters: cmErr.clusters,
+      ha: haSafe.error,
+    })
+    setLoading(false)
   }
 
   useEffect(() => {
@@ -152,18 +152,33 @@ function InstancesPage() {
         </div>
       </div>
 
-      {error && (
+      {(errors.instances || errors.clusters || errors.ha) && (
         <div
           className="mb-3"
           style={{
             padding: '10px 14px',
-            background: 'var(--bg-danger-1, #fee2e2)',
-            color: 'var(--text-danger, #b91c1c)',
+            background: 'var(--bg-warn-1, #fef3c7)',
+            color: 'var(--text-warn, #92400e)',
             borderRadius: 6,
             fontSize: 13,
           }}
         >
-          加载实例/集群/HA 数据失败：{error}
+          <div className="fw-600 mb-1">部分数据加载失败 —— 其他面板仍可用</div>
+          {errors.instances && (
+            <div>
+              · GET /instances：{errors.instances}（agent 服务未就绪或路由未挂载）
+            </div>
+          )}
+          {errors.clusters && (
+            <div>
+              · GET /clusters：{errors.clusters}（迁移 000009 未执行？后端会在下次启动时自动建表）
+            </div>
+          )}
+          {errors.ha && (
+            <div>
+              · GET /ha-groups：{errors.ha}（迁移 000017 未执行？后端会在下次启动时自动建表）
+            </div>
+          )}
         </div>
       )}
 
