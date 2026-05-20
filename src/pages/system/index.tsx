@@ -1,12 +1,26 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Card, Icon, Tag, Button, Tabs, Bar } from '@/components/ui'
 import { Gauge } from '@/components/charts'
+import * as systemApi from '@/api/live/system'
 import PageUpgrade from './PageUpgrade'
 
 type TabKey = 'about' | 'basic' | 'upgrade' | 'crs' | 'sec' | 'data' | 'pool'
 
 export default function SystemPage() {
   const [tab, setTab] = useState<TabKey>('about')
+  const [, setSettings] = useState<systemApi.SystemSetting[]>([])
+
+  useEffect(() => {
+    // 预拉 settings：basic tab 后续按 key 填充表单时直接用，
+    // 当前 NW · 09 各 tab 仍是装饰性 chrome，不重写视图。
+    systemApi
+      .listSettings()
+      .then(setSettings)
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[system api]', err)
+      })
+  }, [])
 
   return (
     <>
