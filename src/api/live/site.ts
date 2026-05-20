@@ -146,3 +146,34 @@ export async function updateSite(id: string, p: Partial<CreateSitePayload> & { s
 export async function deleteSite(id: string): Promise<void> {
   await axios.delete(`/api/v1/sites/${id}`, { headers: authHeader() })
 }
+
+// ---------- 站点级防护模块 ----------
+// 对应后端 site_modules 表（migration 000020）。每个站点对每个模块有
+// (enabled, level) 配置；后端会自动补齐缺省值 enabled=true / level='medium'。
+
+export interface SiteModuleConfig {
+  site_id: number
+  module: string                          // sqli / xss / rce / lfi-rfi / bot / rate-limit / ip-reputation / virtual-patches
+  enabled: boolean
+  level: 'low' | 'medium' | 'high'
+}
+
+export async function listSiteModules(siteId: string | number): Promise<SiteModuleConfig[]> {
+  const res = await axios.get<{ data: SiteModuleConfig[] }>(`/api/v1/sites/${siteId}/modules`, {
+    headers: authHeader(),
+  })
+  return res.data.data ?? []
+}
+
+export async function updateSiteModule(
+  siteId: string | number,
+  module: string,
+  patch: Partial<Pick<SiteModuleConfig, 'enabled' | 'level'>>,
+): Promise<SiteModuleConfig> {
+  const res = await axios.put<SiteModuleConfig>(
+    `/api/v1/sites/${siteId}/modules/${encodeURIComponent(module)}`,
+    patch,
+    { headers: authHeader() },
+  )
+  return res.data
+}
