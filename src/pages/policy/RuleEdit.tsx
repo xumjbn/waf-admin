@@ -4,6 +4,7 @@ import { Card, Icon, type IconName, Tag, Button, Toggle, Tabs, cn, KPI } from '@
 import { AreaChart, BarChartH } from '@/components/charts'
 import { RULES, SITES, mkAttack } from '@/mocks/nebula'
 import { hexA } from '@/components/charts/canvasUtils'
+import * as policyApi from '@/api/live/policy'
 
 type Action = 'block' | 'challenge' | 'rate' | 'allow' | 'log' | 'redirect'
 type Severity = 'low' | 'medium' | 'high'
@@ -106,11 +107,62 @@ export default function RuleEdit() {
     action: Action | 'pass'
   }>(null)
   const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveErr, setSaveErr] = useState<string | null>(null)
   const setR = (patch: Partial<RuleData>) => {
     setRule(r => ({ ...r, ...patch }))
     setDirty(true)
   }
   const close = () => navigate('/policy')
+
+  // chain → backend match 字符串：取第一个 condition 的 op:value，
+  // 后端 match 是单值字符串（migration 000012）。完整 chain 表达式
+  // 后续走 DSL 端点，先保证最小可用：能保存、能在列表里看到。
+  const buildMatch = (): { field: string; match: string } => {
+    const allConds = rule.chains.flatMap(c => c.conditions)
+    const first = allConds.find(c => c.field && c.value)
+    if (!first) return { field: rule.chains[0]?.conditions[0]?.field || '', match: '' }
+    const prefix = first.not ? '!' : ''
+    return { field: first.field, match: `${prefix}${first.op}:${first.value}` }
+  }
+
+  const save = async () => {
+    if (!rule.name.trim()) {
+      setSaveErr('规则名称必填')
+      return
+    }
+    setSaving(true)
+    setSaveErr(null)
+    try {
+      const { field, match } = buildMatch()
+      // 后端 action enum 暂不含 redirect，先映射到 block（保留语义=拦截当前请求）。
+      // 真正的 302 跳转放到 modsec rules 模板里实现，迁移后再扩 enum。
+      const backendAction: 'block' | 'log' | 'allow' | 'rate' | 'challenge' =
+        rule.action === 'redirect' ? 'block' : rule.action
+      const payload = {
+        name: rule.name.trim(),
+        severity: rule.severity,
+        action: backendAction,
+        enabled: rule.enabled,
+        scope: rule.scope,
+        field,
+        match,
+        priority: rule.priority,
+        builtin: false,
+      }
+      if (isNew) {
+        await policyApi.createRule(payload)
+      } else {
+        await policyApi.updateRule(rule.id, payload)
+      }
+      setDirty(false)
+      navigate('/policy')
+    } catch (e: unknown) {
+      setSaveErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const runTest = () => {
     const allConds = rule.chains.flatMap(c => c.conditions)
@@ -194,12 +246,30 @@ export default function RuleEdit() {
             <Icon name="logs" size={13} className="ico" />
             另存为副本
           </Button>
-          <Button variant={dirty ? 'pri' : 'ghost'} disabled={!dirty} onClick={() => setDirty(false)}>
+          <Button
+            variant={dirty || isNew ? 'pri' : 'ghost'}
+            disabled={(!dirty && !isNew) || saving}
+            onClick={save}
+          >
             <Icon name="check" size={13} className="ico" />
-            保存
+            {saving ? '保存中…' : '保存'}
           </Button>
         </div>
       </div>
+
+      {saveErr && (
+        <div
+          className="card mb-3"
+          style={{
+            padding: '10px 14px',
+            background: 'var(--bg-danger-1, #fee2e2)',
+            color: 'var(--text-danger, #b91c1c)',
+            fontSize: 13,
+          }}
+        >
+          保存失败：{saveErr}
+        </div>
+      )}
 
       <div
         className="card mb-4"

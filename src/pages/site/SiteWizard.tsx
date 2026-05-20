@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Card, Icon, Tag, Button, Toggle, SectionHd, cn } from '@/components/ui'
 import { CLUSTERS } from '@/mocks/nebula'
 import { hexA } from '@/components/charts/canvasUtils'
+import * as siteApi from '@/api/live/site'
 
 interface Origin {
   id: number
@@ -76,6 +77,9 @@ export default function SiteWizard() {
   })
   const set = (patch: Partial<WizardState>) => setData(d => ({ ...d, ...patch }))
 
+  const [submitting, setSubmitting] = useState(false)
+  const [submitErr, setSubmitErr] = useState<string | null>(null)
+
   const canNext = useMemo(() => {
     if (step === 0) return data.name.length > 0 && data.domain.length > 0
     if (step === 1) return data.origins.some(o => o.host.length > 0)
@@ -88,9 +92,75 @@ export default function SiteWizard() {
     if (step === 0) navigate('/site')
     else setStep(s => s - 1)
   }
+
+  // 真正把向导数据落库：把 origins 数组 → upstream JSON，模块开关 → description tag。
+  const submitCreate = async () => {
+    setSubmitting(true)
+    setSubmitErr(null)
+    try {
+      const port =
+        Number(data.port) || (data.proto === 'https' || data.proto === 'both' ? 443 : 80)
+      const sslEnabled = data.proto === 'https' || data.proto === 'both'
+      const enabledModules = Object.keys(data.modules).filter(k => data.modules[k])
+      const aliases = data.aliases
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+
+      // upstream JSON 与 site.repository 解析逻辑对齐：servers: [{host, port, weight, proto}]
+      const upstream = {
+        servers: data.origins
+          .filter(o => o.host.trim())
+          .map(o => ({
+            host: o.host.trim(),
+            port: Number(o.port) || 80,
+            weight: Number(o.weight) || 100,
+            proto: o.proto,
+          })),
+        health: {
+          path: data.healthPath,
+          interval_sec: data.healthInterval,
+          fail_threshold: data.healthFails,
+        },
+        host_rewrite: data.hostRewrite,
+      }
+
+      // 向导收集的元信息无对应后端字段，先塞进 description JSON 里，
+      // 后续做站点详情时由 SiteEdit 反解读出来；后端不解析这些字段。
+      const meta = {
+        project: data.project,
+        aliases,
+        cluster: data.cluster,
+        level: data.level,
+        mode: data.mode,
+        modules: enabledModules,
+        http_redirect: data.httpRedirect,
+        http2: data.http2,
+      }
+
+      await siteApi.createSite({
+        name: data.name.trim(),
+        domain: data.domain.trim(),
+        listen_port: port,
+        ssl_enabled: sslEnabled,
+        upstream,
+        waf_enabled: data.mode !== 'observe',
+        description: JSON.stringify(meta),
+      })
+      navigate('/site')
+    } catch (e: unknown) {
+      setSubmitErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const next = () => {
-    if (step === 3) navigate('/site')
-    else if (canNext) setStep(s => s + 1)
+    if (step === 3) {
+      if (data.accepted && !submitting) void submitCreate()
+    } else if (canNext) {
+      setStep(s => s + 1)
+    }
   }
 
   return (
@@ -155,13 +225,30 @@ export default function SiteWizard() {
                   下一步 <Icon name="chevron-right" size={13} className="ico" />
                 </Button>
               ) : (
-                <Button variant={data.accepted ? 'pri' : 'ghost'} onClick={next} disabled={!data.accepted}>
+                <Button
+                  variant={data.accepted ? 'pri' : 'ghost'}
+                  onClick={next}
+                  disabled={!data.accepted || submitting}
+                >
                   <Icon name="check" size={13} className="ico" />
-                  完成接入并启用
+                  {submitting ? '正在创建…' : '完成接入并启用'}
                 </Button>
               )}
             </div>
           </div>
+          {submitErr && (
+            <div
+              className="fs-12"
+              style={{
+                padding: '10px 24px',
+                background: 'var(--bg-danger-1, #fee2e2)',
+                color: 'var(--text-danger, #b91c1c)',
+                borderTop: '1px solid var(--line)',
+              }}
+            >
+              创建失败：{submitErr}
+            </div>
+          )}
         </div>
 
         <SidePreview data={data} step={step} />
