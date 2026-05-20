@@ -201,17 +201,22 @@ function GlobeInner({
 
   const palette = useMemo(() => getPalette(), [paletteKey])
 
-  // 把 attacks → arcs / points / labels
-  const { arcs, points, labels } = useMemo(() => {
+  // 把 attacks → arcs / points / labels + 统计（HUD 用）
+  const { arcs, points, labels, stats } = useMemo(() => {
     const arcs: Arc[] = []
     const points: Point[] = []
     const byIp = new Map<
       string,
       { ip: string; country: string; lat: number; lng: number; count: number }
     >()
+    let total = 0
+    let blocked = 0
 
     for (const a of attacks) {
-      if (!a || typeof a.lat !== 'number' || typeof a.lng !== 'number') continue
+      if (!a) continue
+      total++
+      if (a.action === 'blocked') blocked++
+      if (typeof a.lat !== 'number' || typeof a.lng !== 'number') continue
       if (a.lat === 0 && a.lng === 0) continue
       const color = a.typeColor || palette.arcDefault
       arcs.push({
@@ -257,7 +262,7 @@ function GlobeInner({
         size: 0.4,
       }))
 
-    return { arcs: arcs.slice(0, 500), points, labels }
+    return { arcs: arcs.slice(0, 500), points, labels, stats: { total, blocked } }
   }, [attacks, palette.arcDefault, palette.pointColor])
 
   // 暴露 toggleFullscreen
@@ -290,16 +295,28 @@ function GlobeInner({
     const inst = new Globe(el)
       .width(el.clientWidth)
       .height(el.clientHeight)
-      .backgroundColor(palette.background)
+      // 背景透明，让外层 Card 的 glass 渐变（设计稿原版）透出来
+      .backgroundColor('rgba(0,0,0,0)')
       .showAtmosphere(true)
       .atmosphereColor(palette.atmosphere)
-      .atmosphereAltitude(0.18)
+      .atmosphereAltitude(0.22)
       .showGlobe(true)
       .showGraticules(false)
-    // globe.gl 球面默认材质：globeMaterial().color
-    const mat = inst.globeMaterial() as { color: { set: (c: string) => void } }
+    // 球面材质：half-transparent，让背后的弧线/网格隐约可见
+    const mat = inst.globeMaterial() as {
+      color: { set: (c: string) => void }
+      transparent?: boolean
+      opacity?: number
+      depthWrite?: boolean
+    }
     if (mat && mat.color && typeof mat.color.set === 'function') {
       mat.color.set(palette.globeColor)
+    }
+    if (mat) {
+      mat.transparent = true
+      mat.opacity = 0.55
+      // 半透明 + depthWrite=false 让后面的 polygons/arcs 不被透明面挡住 z-buffer
+      mat.depthWrite = false
     }
 
     globeRef.current = inst
@@ -424,6 +441,14 @@ function GlobeInner({
     /* eslint-enable @typescript-eslint/no-explicit-any */
   }, [arcs, points, labels, palette])
 
+  // 设计稿 HUD 完整还原（src/components/globe/AttackGlobe.tsx 原版）：
+  // TL：● THREAT MAP / GEO + SRC + DST
+  // TR：● LIVE + TRAJ + BLOCK
+  // BL：5 个攻击类型 legend dot（SQLi/XSS/CMDi/SCAN/LFI）
+  // BR：AUTO-ROT · RPS · GMT+8
+  const blockRate = Math.round((stats.blocked / Math.max(1, stats.total)) * 100)
+  const approxRps = Math.round(stats.total * 0.83)
+
   return (
     <div
       ref={wrapRef}
@@ -431,18 +456,18 @@ function GlobeInner({
         position: 'relative',
         width: '100%',
         height,
-        background: palette.background,
+        // 容器透明：让外层 Card .glass + .bracketed 的渐变背景透上来
+        background: 'transparent',
       }}
     >
-      {/* HUD */}
+      {/* HUD TL */}
       <div
         style={{
           position: 'absolute',
           top: 14,
           left: 14,
           fontSize: 11,
-          color: palette.textHud,
-          opacity: 0.9,
+          color: 'var(--text-3)',
           fontFamily: 'JetBrains Mono',
           letterSpacing: 1.2,
           textTransform: 'uppercase',
@@ -451,13 +476,12 @@ function GlobeInner({
         }}
       >
         <div className="t-brand fw-700" style={{ fontSize: 12, marginBottom: 2 }}>
-          ● GLOBAL THREAT MAP
+          ● THREAT MAP / GEO
         </div>
-        <div>SRC : Worldwide IPs</div>
-        <div>
-          DST : {HQ.lat.toFixed(1)}N {HQ.lng.toFixed(1)}E · {HQ.name}
-        </div>
+        <div>SRC : Worldwide</div>
+        <div>DST : {HQ.lat.toFixed(1)}N {HQ.lng.toFixed(1)}E · APAC</div>
       </div>
+      {/* HUD TR */}
       <div
         style={{
           position: 'absolute',
@@ -465,8 +489,7 @@ function GlobeInner({
           right: 14,
           textAlign: 'right',
           fontSize: 11,
-          color: palette.textHud,
-          opacity: 0.9,
+          color: 'var(--text-3)',
           fontFamily: 'JetBrains Mono',
           pointerEvents: 'none',
           zIndex: 2,
@@ -475,26 +498,65 @@ function GlobeInner({
         <div className="t-pink" style={{ fontWeight: 700, marginBottom: 2 }}>
           ● LIVE
         </div>
-        <div>ARCS {String(arcs.length).padStart(4, '0')}</div>
-        <div>POINTS {points.length}</div>
+        <div>TRAJ {String(stats.total).padStart(4, '0')}</div>
+        <div>BLOCK {blockRate}%</div>
       </div>
+      {/* HUD BL：5 种攻击类型 legend */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 14,
+          left: 14,
+          display: 'flex',
+          gap: 14,
+          fontSize: 11,
+          color: 'var(--text-2)',
+          fontFamily: 'JetBrains Mono',
+          pointerEvents: 'none',
+          zIndex: 2,
+        }}
+      >
+        <LegendDot color="#ef4444" label="SQLi" />
+        <LegendDot color="#f59e0b" label="XSS" />
+        <LegendDot color="#a855f7" label="CMDi" />
+        <LegendDot color="#22d3ee" label="SCAN" />
+        <LegendDot color="#ec4899" label="LFI" />
+      </div>
+      {/* HUD BR */}
       <div
         style={{
           position: 'absolute',
           bottom: 14,
           right: 14,
           fontSize: 10,
-          color: palette.textHud,
-          opacity: 0.75,
+          color: 'var(--text-3)',
           fontFamily: 'JetBrains Mono',
           letterSpacing: 1,
+          textTransform: 'uppercase',
           pointerEvents: 'none',
           zIndex: 2,
         }}
       >
-        AUTO-ROT · DRAG · WHEEL ZOOM
+        AUTO-ROT · {approxRps} RPS · GMT+8
       </div>
     </div>
+  )
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      <span
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: '50%',
+          background: color,
+          boxShadow: `0 0 6px ${color}`,
+        }}
+      />
+      {label}
+    </span>
   )
 }
 
