@@ -202,9 +202,16 @@ export default function LogsPage() {
 
         <ForensicsPanel
           event={selected}
-          onRelated={ip => {
-            setIpFilter(ip)
-            window.scrollTo({ top: 0, behavior: 'smooth' })
+          onShowRelated={async ev => {
+            try {
+              const { items } = await logApi.listRelatedEvents(ev.id, 50)
+              if (items.length > 0) setAllEvents(items)
+              setIpFilter(ev.ip)
+              window.scrollTo({ top: 0, behavior: 'smooth' })
+            } catch (err) {
+              console.error('[related events]', err)
+              setIpFilter(ev.ip)
+            }
           }}
         />
       </div>
@@ -212,7 +219,13 @@ export default function LogsPage() {
   )
 }
 
-function ForensicsPanel({ event, onRelated }: { event: AttackEvent; onRelated: (ip: string) => void }) {
+function ForensicsPanel({
+  event,
+  onShowRelated,
+}: {
+  event: AttackEvent
+  onShowRelated: (ev: AttackEvent) => void
+}) {
   return (
     <div className="stack">
       <Card title="事件取证" ico="eye" meta={event.id} bracketed>
@@ -309,9 +322,13 @@ function ForensicsPanel({ event, onRelated }: { event: AttackEvent; onRelated: (
           <Button
             variant="pri"
             size="sm"
-            onClick={() => {
-              if (window.confirm(`确认将 ${event.ip} 加入封禁列表？\n\n该 IP 将立即被所有站点拒绝访问。`)) {
-                window.alert(`已封禁 ${event.ip}\n生效范围：全部站点 · 持续 24h`)
+            onClick={async () => {
+              if (!window.confirm(`确认将 ${event.ip} 加入封禁列表？\n\n该 IP 将立即被所有站点拒绝访问。`)) return
+              try {
+                await logApi.banAttackerIP(event.id)
+                window.alert(`已封禁 ${event.ip}\n已写入 ACL 黑名单`)
+              } catch (err) {
+                window.alert(`封禁失败：${(err as Error).message}`)
               }
             }}
           >
@@ -320,19 +337,19 @@ function ForensicsPanel({ event, onRelated }: { event: AttackEvent; onRelated: (
           <Button
             variant="line"
             size="sm"
-            onClick={() => {
-              if (window.confirm(`确认将 ${event.ip} 加入白名单？\n\n该 IP 的请求将跳过所有 WAF 检测。`)) {
+            onClick={async () => {
+              if (!window.confirm(`确认将 ${event.ip} 加入白名单？\n\n该 IP 的请求将跳过所有 WAF 检测。`)) return
+              try {
+                await logApi.whitelistAttackerIP(event.id)
                 window.alert(`已加入白名单 · ${event.ip}`)
+              } catch (err) {
+                window.alert(`加入白名单失败：${(err as Error).message}`)
               }
             }}
           >
             加入白名单
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onRelated(event.ip)}
-          >
+          <Button variant="ghost" size="sm" onClick={() => onShowRelated(event)}>
             关联事件
           </Button>
         </div>

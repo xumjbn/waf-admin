@@ -1,9 +1,16 @@
 // attack log API adapter（live = 真后端）
 //
-// 端点：GET /api/v1/logs/attack → { data: BackendAttackLog[], total, page, page_size }
+// 端点：
+//   GET    /api/v1/logs/attack                   → { data: BackendAttackLog[], total, page, page_size }
+//   GET    /api/v1/logs/attack/{id}              → BackendAttackLog
+//   GET    /api/v1/logs/attack/{id}/related      → { data: BackendAttackLog[], total, src_ip }
+//   POST   /api/v1/logs/attack/{id}/ban          → 创建 acl 黑名单规则
+//   POST   /api/v1/logs/attack/{id}/whitelist    → 创建 acl 白名单规则
+//   DELETE /api/v1/logs/attack                   → 清空攻击日志
 //
-// 字段以前端 mocks/nebula.ts AttackEvent 为准。后端目前没有 geo/UA/method/URI/
-// site/domain 等列，缺失字段统一回 '—' / 0；待后端扩展再细化。
+// 字段以前端 mocks/nebula.ts AttackEvent 为准。waf-control migration 000011
+// 起已经补齐 region/country/lat/lng/site/domain/type_label/type_color/risk/
+// method/uri/user_agent，前端不再回填 '—'。
 
 import axios from 'axios'
 import { useAuthStore } from '@/store/auth'
@@ -19,34 +26,27 @@ interface BackendAttackLog {
   protocol: string
   attack_type: string
   rule_id: string
-  action: string         // block / alert / pass
+  action: string // block / alert / pass / challenge
   payload: string
   occurred_at: string
+  // migration 000011 起
+  region: string
+  country: string
+  lat: number
+  lng: number
+  site: string
+  domain: string
+  type_label: string
+  type_color: string
+  risk: string // 高/中/低
+  method: string
+  uri: string
+  user_agent: string
 }
 
 function authHeader(): Record<string, string> {
   const t = useAuthStore.getState().token
   return t ? { Authorization: `Bearer ${t}` } : {}
-}
-
-function colorOf(t: string): string {
-  switch ((t || '').toUpperCase()) {
-    case 'SQLI':
-    case 'SQL':
-      return '#ef4444'
-    case 'XSS':
-      return '#ec4899'
-    case 'CC':
-    case 'DDOS':
-      return '#f97316'
-    case 'BOT':
-      return '#22d3ee'
-    case 'PATH':
-    case 'LFI':
-      return '#a855f7'
-    default:
-      return '#8e84a3'
-  }
 }
 
 function mapAction(a: string): AttackEvent['action'] {
@@ -77,22 +77,22 @@ function adapt(b: BackendAttackLog): AttackEvent {
     t,
     ts: Number.isNaN(ts) ? 0 : ts,
     ip: b.src_ip || '—',
-    region: '—',
-    country: '—',
-    lat: 0,
-    lng: 0,
-    site: '—',
-    domain: '—',
+    region: b.region || '—',
+    country: b.country || '—',
+    lat: b.lat ?? 0,
+    lng: b.lng ?? 0,
+    site: b.site || '—',
+    domain: b.domain || '—',
     type,
-    typeLabel: type,
-    typeColor: colorOf(type),
-    risk: '中',
+    typeLabel: b.type_label || type,
+    typeColor: b.type_color || '#8e84a3',
+    risk: (b.risk as AttackEvent['risk']) || '中',
     action: mapAction(b.action),
-    method: (b.protocol || 'GET').toUpperCase(),
-    uri: '—',
+    method: (b.method || b.protocol || 'GET').toUpperCase(),
+    uri: b.uri || '—',
     payload: b.payload || '',
     ruleId: b.rule_id || '—',
-    ua: '—',
+    ua: b.user_agent || '—',
   }
 }
 
@@ -100,6 +100,10 @@ export async function listAttackLogs(opts?: {
   page?: number
   pageSize?: number
   nodeID?: string
+  risk?: string
+  site?: string
+  country?: string
+  srcIP?: string
 }): Promise<{ items: AttackEvent[]; total: number }> {
   const res = await axios.get<{
     data: BackendAttackLog[]
@@ -112,6 +116,10 @@ export async function listAttackLogs(opts?: {
       page: opts?.page ?? 1,
       page_size: opts?.pageSize ?? 50,
       node_id: opts?.nodeID,
+      risk: opts?.risk || undefined,
+      site: opts?.site || undefined,
+      country: opts?.country || undefined,
+      src_ip: opts?.srcIP || undefined,
     },
   })
   return {
@@ -122,4 +130,37 @@ export async function listAttackLogs(opts?: {
 
 export async function clearAttackLogs(): Promise<void> {
   await axios.delete('/api/v1/logs/attack', { headers: authHeader() })
+}
+
+export async function getAttackLog(id: string | number): Promise<AttackEvent> {
+  const res = await axios.get<BackendAttackLog>(`/api/v1/logs/attack/${id}`, { headers: authHeader() })
+  return adapt(res.data)
+}
+
+export async function banAttackerIP(id: string | number): Promise<void> {
+  await axios.post(`/api/v1/logs/attack/${id}/ban`, {}, { headers: authHeader() })
+}
+
+export async function whitelistAttackerIP(id: string | number): Promise<void> {
+  await axios.post(`/api/v1/logs/attack/${id}/whitelist`, {}, { headers: authHeader() })
+}
+
+export async function listRelatedEvents(
+  id: string | number,
+  limit = 50,
+): Promise<{ items: AttackEvent[]; total: number; srcIP: string }> {
+  const res = await axios.get<{ data: BackendAttackLog[]; total: number; src_ip: string }>(
+    `/api/v1/logs/attack/${id}/related`,
+    { headers: authHeader(), params: { limit } },
+  )
+  return {
+    items: (res.data.data ?? []).map(adapt),
+    total: res.data.total ?? 0,
+    srcIP: res.data.src_ip ?? '',
+  }
+}
+
+export async function ingestAttackLog(payload: Partial<BackendAttackLog>): Promise<number> {
+  const res = await axios.post<{ id: number }>('/api/v1/logs/attack', payload, { headers: authHeader() })
+  return res.data.id
 }
