@@ -1,18 +1,55 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Card, Icon, Tag, Button, Tabs } from '@/components/ui'
-import { mkAttack, type AttackEvent } from '@/mocks/nebula'
+import { type AttackEvent } from '@/mocks/nebula'
+import * as logApi from '@/api/live/log'
 
 type FilterTab = 'all' | 'block' | 'chal' | 'log'
 
+const EMPTY_EVENT: AttackEvent = {
+  id: '',
+  t: '—',
+  ts: 0,
+  ip: '—',
+  region: '—',
+  country: '—',
+  lat: 0,
+  lng: 0,
+  site: '—',
+  domain: '—',
+  type: '—',
+  typeLabel: '—',
+  typeColor: '#8e84a3',
+  risk: '中',
+  action: 'logged',
+  method: 'GET',
+  uri: '—',
+  payload: '',
+  ruleId: '—',
+  ua: '—',
+}
+
 export default function LogsPage() {
-  const allEvents = useMemo(() => Array.from({ length: 40 }, () => mkAttack()), [])
+  const [allEvents, setAllEvents] = useState<AttackEvent[]>([])
   const [ipFilter, setIpFilter] = useState<string | null>(null)
   const events = useMemo(
     () => (ipFilter ? allEvents.filter(e => e.ip === ipFilter) : allEvents),
     [allEvents, ipFilter],
   )
-  const [selected, setSelected] = useState<AttackEvent>(allEvents[0])
+  const [selected, setSelected] = useState<AttackEvent>(EMPTY_EVENT)
   const [tab, setTab] = useState<FilterTab>('all')
+
+  useEffect(() => {
+    logApi
+      .listAttackLogs({ pageSize: 100 })
+      .then(({ items }) => {
+        setAllEvents(items)
+        if (items.length > 0) setSelected(prev => (prev.id ? prev : items[0]))
+      })
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[log api]', err)
+      })
+  }, [])
 
   return (
     <>
@@ -165,9 +202,16 @@ export default function LogsPage() {
 
         <ForensicsPanel
           event={selected}
-          onRelated={ip => {
-            setIpFilter(ip)
-            window.scrollTo({ top: 0, behavior: 'smooth' })
+          onShowRelated={async ev => {
+            try {
+              const { items } = await logApi.listRelatedEvents(ev.id, 50)
+              if (items.length > 0) setAllEvents(items)
+              setIpFilter(ev.ip)
+              window.scrollTo({ top: 0, behavior: 'smooth' })
+            } catch (err) {
+              console.error('[related events]', err)
+              setIpFilter(ev.ip)
+            }
           }}
         />
       </div>
@@ -175,7 +219,13 @@ export default function LogsPage() {
   )
 }
 
-function ForensicsPanel({ event, onRelated }: { event: AttackEvent; onRelated: (ip: string) => void }) {
+function ForensicsPanel({
+  event,
+  onShowRelated,
+}: {
+  event: AttackEvent
+  onShowRelated: (ev: AttackEvent) => void
+}) {
   return (
     <div className="stack">
       <Card title="事件取证" ico="eye" meta={event.id} bracketed>
@@ -272,9 +322,13 @@ function ForensicsPanel({ event, onRelated }: { event: AttackEvent; onRelated: (
           <Button
             variant="pri"
             size="sm"
-            onClick={() => {
-              if (window.confirm(`确认将 ${event.ip} 加入封禁列表？\n\n该 IP 将立即被所有站点拒绝访问。`)) {
-                window.alert(`已封禁 ${event.ip}\n生效范围：全部站点 · 持续 24h`)
+            onClick={async () => {
+              if (!window.confirm(`确认将 ${event.ip} 加入封禁列表？\n\n该 IP 将立即被所有站点拒绝访问。`)) return
+              try {
+                await logApi.banAttackerIP(event.id)
+                window.alert(`已封禁 ${event.ip}\n已写入 ACL 黑名单`)
+              } catch (err) {
+                window.alert(`封禁失败：${(err as Error).message}`)
               }
             }}
           >
@@ -283,19 +337,19 @@ function ForensicsPanel({ event, onRelated }: { event: AttackEvent; onRelated: (
           <Button
             variant="line"
             size="sm"
-            onClick={() => {
-              if (window.confirm(`确认将 ${event.ip} 加入白名单？\n\n该 IP 的请求将跳过所有 WAF 检测。`)) {
+            onClick={async () => {
+              if (!window.confirm(`确认将 ${event.ip} 加入白名单？\n\n该 IP 的请求将跳过所有 WAF 检测。`)) return
+              try {
+                await logApi.whitelistAttackerIP(event.id)
                 window.alert(`已加入白名单 · ${event.ip}`)
+              } catch (err) {
+                window.alert(`加入白名单失败：${(err as Error).message}`)
               }
             }}
           >
             加入白名单
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onRelated(event.ip)}
-          >
+          <Button variant="ghost" size="sm" onClick={() => onShowRelated(event)}>
             关联事件
           </Button>
         </div>
