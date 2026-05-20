@@ -1,16 +1,25 @@
 // instance API adapter（live = 真后端，区别于 src/api/instance.ts 给 legacy
 // Ant Design Pro 页面用的 wrapper）。
 //
-// 端点：GET /api/v1/instances → { instances: BackendInstance[] }
-// 后端 `instancemgmt` 域是 gRPC 拉自 connected agents 的只读视图，
-// 没有 cluster / 创建 / 重启 概念，所以本适配只覆盖 list；
-// 顶栏『新增节点 / 新建集群』+ 行内『重启』继续走客户端 confirm/state mock。
+// 三大块：
+//   1. 实例列表          GET  /api/v1/instances           → { instances: BackendInstance[] }
+//                       POST /api/v1/instances/restart  + register-intent
+//   2. 集群编排          GET  /api/v1/clusters            → { clusters: BackendCluster[] }
+//                       POST /api/v1/clusters
+//                       PUT  /api/v1/clusters/{id}
+//                       DELETE /api/v1/clusters/{id}
+//   3. HA 主备状态       GET  /api/v1/ha-groups           → { ha_groups: BackendHAGroup[] }
+//                       POST /api/v1/ha-groups
+//                       PUT  /api/v1/ha-groups/{id}
+//                       POST /api/v1/ha-groups/{id}/switchover
+//                       DELETE /api/v1/ha-groups/{id}
 //
-// 字段对齐：以前端 src/mocks/nebula.ts 的 `Instance` 形状为准。
+// 字段对齐：以前端 src/mocks/nebula.ts 的 `Instance` / `Cluster` 形状为准；
+// 实例本身由 agent 自注册维护，CRUD 不开放；集群 / HA 走数据库 CRUD。
 
 import axios from 'axios'
 import { useAuthStore } from '@/store/auth'
-import type { Instance } from '@/mocks/nebula'
+import type { Instance, Cluster } from '@/mocks/nebula'
 
 interface BackendInstance {
   node_id: string
@@ -29,6 +38,43 @@ interface BackendInstance {
   memory_total: number
   disk_total: number
   last_seen: string
+}
+
+interface BackendCluster {
+  id: number
+  name: string
+  vip: string
+  algo: string
+  state: 'ok' | 'warn' | 'critical' | string
+  site_count: number
+  description?: string
+  nodes: number
+  node_ids: string[]
+  created_at: string
+  updated_at: string
+}
+
+interface BackendHAGroup {
+  id: number
+  name: string
+  primary_node: string
+  standby_node: string
+  vip: string
+  state: 'ok' | 'warn' | 'critical' | string
+  last_switch?: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** UI 表渲染需要的 HA 行结构 */
+export interface HAGroupRow {
+  id: number
+  name: string
+  primary: string
+  standby: string
+  vip: string
+  state: 'ok' | 'warn' | 'critical'
+  lastSwitch?: string
 }
 
 function authHeader(): Record<string, string> {
@@ -62,10 +108,19 @@ function deriveUptime(lastSeen: string): string {
   return `${Math.floor(h / 24)}d`
 }
 
-function adapt(b: BackendInstance): Instance {
+// 后端 algo 用英文 enum，UI 想看中文/友好串。两边都接受。
+const ALGO_ZH: Record<string, string> = {
+  'round-robin': '加权轮询',
+  'least-conn': '最小连接',
+  'ip-hash': 'IP Hash',
+  sticky: '会话保持',
+}
+
+function adaptInstance(b: BackendInstance, clusterByNode: Map<string, string>): Instance {
+  const id = b.id || b.node_id || b.hostname
   return {
-    id: b.id || b.node_id || b.hostname,
-    cluster: 'cluster-default', // 占位，UI 列别空
+    id,
+    cluster: clusterByNode.get(id) || clusterByNode.get(b.hostname) || 'cluster-default',
     ip: b.ip,
     cpu: Math.round(b.cpu_percent ?? 0),
     mem: Math.round(b.memory_percent ?? 0),
@@ -77,9 +132,199 @@ function adapt(b: BackendInstance): Instance {
   }
 }
 
-export async function listInstances(): Promise<Instance[]> {
+function adaptCluster(b: BackendCluster): Cluster {
+  const stateNorm: Cluster['state'] =
+    b.state === 'warn' || b.state === 'critical' ? b.state : 'ok'
+  return {
+    id: String(b.id),
+    name: b.name,
+    nodes: b.nodes ?? (b.node_ids ? b.node_ids.length : 0),
+    vip: b.vip,
+    algo: ALGO_ZH[b.algo] || b.algo,
+    state: stateNorm,
+    site_count: b.site_count ?? 0,
+  }
+}
+
+function adaptHAGroup(b: BackendHAGroup): HAGroupRow {
+  const stateNorm: HAGroupRow['state'] =
+    b.state === 'warn' || b.state === 'critical' ? b.state : 'ok'
+  return {
+    id: b.id,
+    name: b.name,
+    primary: b.primary_node,
+    standby: b.standby_node,
+    vip: b.vip,
+    state: stateNorm,
+    lastSwitch: b.last_switch || undefined,
+  }
+}
+
+// ---------- 实例列表 ----------
+
+export async function listInstances(clusters?: Cluster[]): Promise<Instance[]> {
+  // node → cluster 名映射：后端 BackendCluster.node_ids 已经把成员都吐出来。
+  const clusterByNode = new Map<string, string>()
+  if (clusters && clusters.length) {
+    // 这里复用同一个 listClusters() 的结果，但 Cluster (UI shape) 没带 node_ids；
+    // 因此 cluster 名直接用 backend cluster name。本函数只用得到映射，调用方
+    // 已经能给一个空数组（兜底 cluster-default）。
+  }
   const res = await axios.get<{ instances: BackendInstance[] }>('/api/v1/instances', {
     headers: authHeader(),
   })
-  return (res.data.instances ?? []).map(adapt)
+  return (res.data.instances ?? []).map(b => adaptInstance(b, clusterByNode))
+}
+
+/** 通过详细列表（含 node_ids）建立 node → cluster 名映射并返回实例。*/
+export async function listInstancesWithClusterMap(): Promise<{
+  instances: Instance[]
+  clusters: Cluster[]
+}> {
+  // 一并拉，避免实例页两次往返。
+  const [clRes, inRes] = await Promise.all([
+    axios.get<{ clusters: BackendCluster[] }>('/api/v1/clusters', { headers: authHeader() }),
+    axios.get<{ instances: BackendInstance[] }>('/api/v1/instances', { headers: authHeader() }),
+  ])
+  const backendClusters = clRes.data.clusters ?? []
+  const clusterByNode = new Map<string, string>()
+  for (const c of backendClusters) {
+    for (const nid of c.node_ids || []) {
+      clusterByNode.set(nid, c.name)
+    }
+  }
+  return {
+    clusters: backendClusters.map(adaptCluster),
+    instances: (inRes.data.instances ?? []).map(b => adaptInstance(b, clusterByNode)),
+  }
+}
+
+export async function restartInstance(hostname: string, reason?: string): Promise<void> {
+  await axios.post(
+    '/api/v1/instances/restart',
+    { hostname, reason: reason ?? 'manual restart from UI' },
+    { headers: authHeader() },
+  )
+}
+
+export async function registerNodeIntent(payload: {
+  hostname: string
+  ip?: string
+  description?: string
+}): Promise<void> {
+  await axios.post('/api/v1/instances/register-intent', payload, { headers: authHeader() })
+}
+
+// ---------- 集群 CRUD ----------
+
+export async function listClusters(): Promise<Cluster[]> {
+  const res = await axios.get<{ clusters: BackendCluster[] }>('/api/v1/clusters', {
+    headers: authHeader(),
+  })
+  return (res.data.clusters ?? []).map(adaptCluster)
+}
+
+export async function createCluster(payload: {
+  name: string
+  vip: string
+  algo?: string
+  description?: string
+}): Promise<Cluster> {
+  const res = await axios.post<{ cluster: BackendCluster }>(
+    '/api/v1/clusters',
+    {
+      name: payload.name,
+      vip: payload.vip,
+      algo: payload.algo ?? 'round-robin',
+      description: payload.description ?? '',
+    },
+    { headers: authHeader() },
+  )
+  return adaptCluster(res.data.cluster)
+}
+
+export async function updateCluster(
+  id: string | number,
+  patch: Partial<{ name: string; vip: string; algo: string; state: string; description: string }>,
+): Promise<Cluster> {
+  const res = await axios.put<{ cluster: BackendCluster }>(`/api/v1/clusters/${id}`, patch, {
+    headers: authHeader(),
+  })
+  return adaptCluster(res.data.cluster)
+}
+
+export async function deleteCluster(id: string | number): Promise<void> {
+  await axios.delete(`/api/v1/clusters/${id}`, { headers: authHeader() })
+}
+
+export async function assignClusterNode(
+  clusterId: string | number,
+  nodeId: string,
+  role: 'primary' | 'standby' = 'primary',
+): Promise<void> {
+  await axios.put(
+    `/api/v1/clusters/${clusterId}/nodes/${encodeURIComponent(nodeId)}?role=${role}`,
+    null,
+    { headers: authHeader() },
+  )
+}
+
+export async function removeClusterNode(
+  clusterId: string | number,
+  nodeId: string,
+): Promise<void> {
+  await axios.delete(`/api/v1/clusters/${clusterId}/nodes/${encodeURIComponent(nodeId)}`, {
+    headers: authHeader(),
+  })
+}
+
+// ---------- HA 主备组 ----------
+
+export async function listHAGroups(): Promise<HAGroupRow[]> {
+  const res = await axios.get<{ ha_groups: BackendHAGroup[] }>('/api/v1/ha-groups', {
+    headers: authHeader(),
+  })
+  return (res.data.ha_groups ?? []).map(adaptHAGroup)
+}
+
+export async function createHAGroup(payload: {
+  name: string
+  primary_node: string
+  standby_node: string
+  vip: string
+  state?: string
+}): Promise<HAGroupRow> {
+  const res = await axios.post<{ ha_group: BackendHAGroup }>('/api/v1/ha-groups', payload, {
+    headers: authHeader(),
+  })
+  return adaptHAGroup(res.data.ha_group)
+}
+
+export async function updateHAGroup(
+  id: number,
+  patch: Partial<{
+    name: string
+    primary_node: string
+    standby_node: string
+    vip: string
+    state: string
+  }>,
+): Promise<HAGroupRow> {
+  const res = await axios.put<{ ha_group: BackendHAGroup }>(`/api/v1/ha-groups/${id}`, patch, {
+    headers: authHeader(),
+  })
+  return adaptHAGroup(res.data.ha_group)
+}
+
+export async function switchoverHAGroup(id: number): Promise<HAGroupRow> {
+  const res = await axios.post<{ ha_group: BackendHAGroup }>(
+    `/api/v1/ha-groups/${id}/switchover`,
+    null,
+    { headers: authHeader() },
+  )
+  return adaptHAGroup(res.data.ha_group)
+}
+
+export async function deleteHAGroup(id: number): Promise<void> {
+  await axios.delete(`/api/v1/ha-groups/${id}`, { headers: authHeader() })
 }
