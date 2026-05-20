@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Card, Icon, KPI, Tag, Bar, Button } from '@/components/ui'
 import type { Instance, Cluster } from '@/mocks/nebula'
@@ -19,6 +19,8 @@ function InstancesPage() {
     clusters?: string
     ha?: string
   }>({})
+  const [showNodeModal, setShowNodeModal] = useState(false)
+  const [showClusterModal, setShowClusterModal] = useState(false)
 
   const refresh = async () => {
     setLoading(true)
@@ -87,36 +89,24 @@ function InstancesPage() {
     }
   }
 
-  const addNode = async () => {
-    const hostname = window.prompt(
-      '新增节点 —— 输入预登记的主机名（实际 register 由 agent 启动后自动完成）：',
-      '',
-    )
-    if (!hostname) return
-    const ip = window.prompt('该节点的 IP（可选）：', '') || ''
-    try {
-      await instanceApi.registerNodeIntent({ hostname, ip })
-      window.alert(`已记录预登记意图：${hostname}\n请在该节点部署 waf-agent 后即可自动注册。`)
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      window.alert(`登记失败：${msg}`)
-    }
+  const submitNode = async (payload: {
+    hostname: string
+    ip: string
+    description: string
+  }) => {
+    await instanceApi.registerNodeIntent(payload)
+    setShowNodeModal(false)
   }
 
-  const addCluster = async () => {
-    const name = window.prompt('集群名称：', '')
-    if (!name) return
-    const vip = window.prompt('VIP（如 10.0.5.100）：', '') || ''
-    const algo =
-      window.prompt('调度算法（round-robin / least-conn / ip-hash）：', 'round-robin') ||
-      'round-robin'
-    try {
-      const c = await instanceApi.createCluster({ name, vip, algo })
-      setClusters(prev => [...prev, c])
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      window.alert(`创建失败：${msg}`)
-    }
+  const submitCluster = async (payload: {
+    name: string
+    vip: string
+    algo: string
+    description: string
+  }) => {
+    const c = await instanceApi.createCluster(payload)
+    setClusters(prev => [...prev, c])
+    setShowClusterModal(false)
   }
 
   const switchHA = async (row: HAGroupRow) => {
@@ -141,11 +131,11 @@ function InstancesPage() {
           <p>WAF 实例池 · 集群编排 · 主备 HA · 资源调度</p>
         </div>
         <div className="actions">
-          <Button variant="ghost" onClick={addNode}>
+          <Button variant="ghost" onClick={() => setShowNodeModal(true)}>
             <Icon name="server" size={13} className="ico" />
             新增节点
           </Button>
-          <Button variant="pri" onClick={addCluster}>
+          <Button variant="pri" onClick={() => setShowClusterModal(true)}>
             <Icon name="plus" size={13} className="ico" />
             新建集群
           </Button>
@@ -439,6 +429,301 @@ function InstancesPage() {
           </table>
         )}
       </Card>
+
+      {showNodeModal && (
+        <AddNodeModal
+          clusters={clusters}
+          onCancel={() => setShowNodeModal(false)}
+          onSubmit={submitNode}
+        />
+      )}
+      {showClusterModal && (
+        <AddClusterModal
+          onCancel={() => setShowClusterModal(false)}
+          onSubmit={submitCluster}
+        />
+      )}
+    </>
+  )
+}
+
+// ---------- 弹窗：新增节点 ----------
+// 真正的 register 由 agent 启动后通过 gRPC 自动完成，这里只是给管理员
+// 一个『预登记意图』入口，调 POST /instances/register-intent；
+// agent 上线后会自然出现在实例列表，无需手动绑定。
+function AddNodeModal(props: {
+  clusters: Cluster[]
+  onCancel: () => void
+  onSubmit: (payload: { hostname: string; ip: string; description: string }) => Promise<void>
+}) {
+  const [hostname, setHostname] = useState('')
+  const [ip, setIp] = useState('')
+  const [description, setDescription] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const onConfirm = async () => {
+    if (!hostname.trim()) {
+      setError('主机名必填')
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    try {
+      await props.onSubmit({
+        hostname: hostname.trim(),
+        ip: ip.trim(),
+        description: description.trim(),
+      })
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <ModalShell title="新增节点" subtitle="预登记意图 · agent 启动后自动注册" onCancel={props.onCancel}>
+      <Field label="主机名" required hint="与节点 agent.toml 中 [agent].hostname 保持一致">
+        <input
+          className="input"
+          value={hostname}
+          onChange={e => setHostname(e.target.value)}
+          placeholder="如 waf-edge-shanghai-01"
+          autoFocus
+        />
+      </Field>
+      <Field label="IP 地址" hint="可选 —— agent 上线时会上报真实 IP，这里仅供检索">
+        <input
+          className="input"
+          value={ip}
+          onChange={e => setIp(e.target.value)}
+          placeholder="如 10.0.5.21"
+        />
+      </Field>
+      <Field label="备注" hint="可选 —— 部署位置 / 运维负责人 / 资产编号">
+        <textarea
+          className="input"
+          rows={3}
+          value={description}
+          onChange={e => setDescription(e.target.value)}
+          style={{ resize: 'vertical' }}
+        />
+      </Field>
+      <div
+        className="fs-11 muted"
+        style={{
+          marginTop: 8,
+          padding: 10,
+          background: 'var(--bg-2)',
+          borderRadius: 6,
+          lineHeight: 1.6,
+        }}
+      >
+        🛈 接下来：在该节点部署 <code>waf-agent</code>，把{' '}
+        <code>configs/agent.toml</code> 的{' '}
+        <code>[server].address</code> 指向控制面 gRPC 端口（默认 :50051），启动后将自动出现在『实例列表』。
+        {props.clusters.length > 0 && (
+          <>
+            <br />
+            想绑到具体集群？上线后在『集群编排』卡里点对应集群、把节点拉进来即可。
+          </>
+        )}
+      </div>
+      <ModalActions
+        onCancel={props.onCancel}
+        onConfirm={onConfirm}
+        confirmText={submitting ? '提交中…' : '记录意图'}
+        disabled={submitting}
+        error={error}
+      />
+    </ModalShell>
+  )
+}
+
+// ---------- 弹窗：新建集群 ----------
+function AddClusterModal(props: {
+  onCancel: () => void
+  onSubmit: (payload: {
+    name: string
+    vip: string
+    algo: string
+    description: string
+  }) => Promise<void>
+}) {
+  const [name, setName] = useState('')
+  const [vip, setVip] = useState('')
+  const [algo, setAlgo] = useState('round-robin')
+  const [description, setDescription] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const onConfirm = async () => {
+    if (!name.trim()) {
+      setError('集群名称必填')
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    try {
+      await props.onSubmit({
+        name: name.trim(),
+        vip: vip.trim(),
+        algo,
+        description: description.trim(),
+      })
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <ModalShell title="新建集群" subtitle="VIP + 调度算法，节点上线后再绑入" onCancel={props.onCancel}>
+      <Field label="集群名称" required hint="全局唯一 · 推荐 CLU-XXX 前缀">
+        <input
+          className="input"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          placeholder="如 CLU-PAYMENT"
+          autoFocus
+        />
+      </Field>
+      <Field label="VIP" hint="集群对外暴露的浮动 IP（keepalived/LVS 维护）">
+        <input
+          className="input"
+          value={vip}
+          onChange={e => setVip(e.target.value)}
+          placeholder="如 10.0.5.100"
+        />
+      </Field>
+      <Field label="调度算法" required>
+        <select className="select" value={algo} onChange={e => setAlgo(e.target.value)}>
+          <option value="round-robin">round-robin · 加权轮询</option>
+          <option value="least-conn">least-conn · 最小连接数</option>
+          <option value="ip-hash">ip-hash · 会话粘滞</option>
+          <option value="sticky">sticky · 自定义粘滞</option>
+        </select>
+      </Field>
+      <Field label="备注" hint="可选">
+        <textarea
+          className="input"
+          rows={3}
+          value={description}
+          onChange={e => setDescription(e.target.value)}
+          style={{ resize: 'vertical' }}
+        />
+      </Field>
+      <ModalActions
+        onCancel={props.onCancel}
+        onConfirm={onConfirm}
+        confirmText={submitting ? '创建中…' : '创建集群'}
+        disabled={submitting}
+        error={error}
+      />
+    </ModalShell>
+  )
+}
+
+// ---------- Modal 通用件 ----------
+function ModalShell(props: {
+  title: string
+  subtitle?: string
+  onCancel: () => void
+  children: ReactNode
+}) {
+  return (
+    <div
+      onClick={props.onCancel}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(13,10,24,.62)',
+        backdropFilter: 'blur(4px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        style={{
+          width: 480,
+          maxWidth: 'calc(100vw - 32px)',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--line-strong)',
+          borderRadius: 12,
+          padding: 24,
+          boxShadow: '0 24px 80px rgba(0,0,0,.45)',
+        }}
+      >
+        <div className="mb-3">
+          <div className="fw-700 text-0 fs-16">{props.title}</div>
+          {props.subtitle && <div className="muted fs-12 mt-1">{props.subtitle}</div>}
+        </div>
+        {props.children}
+      </div>
+    </div>
+  )
+}
+
+function Field(props: {
+  label: string
+  required?: boolean
+  hint?: string
+  children: ReactNode
+}) {
+  return (
+    <div className="mb-3">
+      <label
+        className="fs-12 fw-600"
+        style={{ display: 'block', marginBottom: 6, color: 'var(--text-0)' }}
+      >
+        {props.label}
+        {props.required && <span style={{ color: 'var(--brand-1)', marginLeft: 4 }}>*</span>}
+      </label>
+      {props.children}
+      {props.hint && (
+        <div className="muted fs-11" style={{ marginTop: 4 }}>
+          {props.hint}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ModalActions(props: {
+  onCancel: () => void
+  onConfirm: () => void
+  confirmText: string
+  disabled?: boolean
+  error?: string | null
+}) {
+  return (
+    <>
+      {props.error && (
+        <div
+          className="fs-12"
+          style={{
+            padding: '8px 12px',
+            marginBottom: 10,
+            background: 'var(--bg-danger-1, #fee2e2)',
+            color: 'var(--text-danger, #b91c1c)',
+            borderRadius: 6,
+          }}
+        >
+          {props.error}
+        </div>
+      )}
+      <div className="flex gap-2" style={{ justifyContent: 'flex-end', marginTop: 8 }}>
+        <Button variant="ghost" onClick={props.onCancel}>
+          取消
+        </Button>
+        <Button variant="pri" onClick={props.onConfirm} disabled={props.disabled}>
+          {props.confirmText}
+        </Button>
+      </div>
     </>
   )
 }
