@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, Icon, Tag, Button, Toggle, Tabs, cn } from '@/components/ui'
+import * as upgradeApi from '@/api/live/upgrade'
 
 type Stage = 'idle' | 'preflight' | 'running' | 'done'
 
@@ -100,7 +101,22 @@ export default function PageUpgrade() {
   const [progress, setProgress] = useState(0)
   const [logLines, setLogLines] = useState<{ t: number; l: string; k: 'info' | 'ok' | 'warn' | 'err' }[]>([])
   const [autoUpdate, setAutoUpdate] = useState(false)
+  const [packages, setPackages] = useState<upgradeApi.UpgradePackage[]>([])
   const logRef = useRef<HTMLDivElement>(null)
+
+  // 拉真实升级包列表；当前 UI 版本时间轴仍按 VERSIONS 设计稿渲染，
+  // 等设计稿调成『后端包列表』时切到 packages。
+  useEffect(() => {
+    upgradeApi
+      .listUpgrades()
+      .then(setPackages)
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[upgrade api]', err)
+      })
+  }, [])
+  // eslint-disable-next-line no-console
+  if (packages.length > 0) console.debug('[upgrade] backend packages', packages)
 
   useEffect(() => {
     if (stage !== 'running') return
