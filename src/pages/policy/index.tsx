@@ -52,9 +52,23 @@ function PolicyPage() {
             <Icon name="download" size={13} className="ico" />
             导出规则
           </Button>
-          <Button variant="line">
-            <Icon name="sparkles" size={13} className="ico" />
-            规则市场
+          <Button
+            variant="line"
+            onClick={async () => {
+              try {
+                const r = await policyApi.syncBuiltin()
+                window.alert(
+                  `已同步 ModSecurity 内置规则\n目录：${r.dir}\n新增 ${r.inserted} · 更新 ${r.updated} · 共 ${r.total}`,
+                )
+                const list = await policyApi.listRules()
+                setRules(list)
+              } catch (e: unknown) {
+                window.alert(`同步失败：${e instanceof Error ? e.message : String(e)}`)
+              }
+            }}
+          >
+            <Icon name="refresh" size={13} className="ico" />
+            同步内置规则
           </Button>
           <Button variant="pri" onClick={() => nav('/policy/rule')}>
             <Icon name="plus" size={13} className="ico" />
