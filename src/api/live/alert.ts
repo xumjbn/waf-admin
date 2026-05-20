@@ -114,3 +114,94 @@ export async function alertStats(): Promise<AlertStats> {
   const res = await axios.get<AlertStats>('/api/v1/alert/events/stats', { headers: authHeader() })
   return res.data
 }
+
+// --- channels（NW · 06 alert channel 全 CRUD，migration 000013 起）
+
+export type ChannelKind = 'email' | 'wechat' | 'dingtalk' | 'pagerduty' | 'webhook' | 'sms'
+
+export interface Channel {
+  id: number
+  name: string
+  kind: ChannelKind
+  target: string
+  description: string
+  severity: 'info' | 'warn' | 'critical'
+  config: Record<string, unknown>
+  is_enabled: boolean
+}
+
+interface BackendChannel {
+  id: number
+  name: string
+  kind: string
+  target: string
+  description: string
+  severity: string
+  config?: Record<string, unknown> | string | null
+  is_enabled: boolean
+}
+
+function parseConfig(c: BackendChannel['config']): Record<string, unknown> {
+  if (!c) return {}
+  if (typeof c === 'string') {
+    try { return JSON.parse(c) as Record<string, unknown> } catch { return {} }
+  }
+  return c
+}
+
+function adaptChannel(b: BackendChannel): Channel {
+  return {
+    id: b.id,
+    name: b.name,
+    kind: (b.kind as ChannelKind) || 'webhook',
+    target: b.target || '',
+    description: b.description || '',
+    severity: (b.severity as Channel['severity']) || 'warn',
+    config: parseConfig(b.config),
+    is_enabled: !!b.is_enabled,
+  }
+}
+
+export async function listAlertChannels(): Promise<{ channels: Channel[]; kinds: ChannelKind[] }> {
+  const res = await axios.get<{ data: BackendChannel[]; kinds: ChannelKind[] }>(
+    '/api/v1/alert/channels',
+    { headers: authHeader() },
+  )
+  return {
+    channels: (res.data.data ?? []).map(adaptChannel),
+    kinds: res.data.kinds ?? ['email', 'wechat', 'dingtalk', 'pagerduty', 'webhook', 'sms'],
+  }
+}
+
+export interface SaveChannelPayload {
+  name: string
+  kind: ChannelKind
+  target: string
+  description?: string
+  severity?: Channel['severity']
+  config?: Record<string, unknown>
+  is_enabled?: boolean
+}
+
+export async function createAlertChannel(p: SaveChannelPayload): Promise<Channel> {
+  const res = await axios.post<BackendChannel>('/api/v1/alert/channels', p, { headers: authHeader() })
+  return adaptChannel(res.data)
+}
+
+export async function updateAlertChannel(id: number, p: Partial<SaveChannelPayload>): Promise<Channel> {
+  const res = await axios.put<BackendChannel>(`/api/v1/alert/channels/${id}`, p, { headers: authHeader() })
+  return adaptChannel(res.data)
+}
+
+export async function deleteAlertChannel(id: number): Promise<void> {
+  await axios.delete(`/api/v1/alert/channels/${id}`, { headers: authHeader() })
+}
+
+export async function testAlertChannel(id: number): Promise<Alert> {
+  const res = await axios.post<BackendEvent>(
+    `/api/v1/alert/channels/${id}/test`,
+    {},
+    { headers: authHeader() },
+  )
+  return adapt(res.data)
+}
