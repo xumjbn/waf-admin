@@ -1,12 +1,12 @@
 // policy/rule API adapter（live）
 //
-// 端点：GET/POST/PUT/DELETE /api/v1/policies
-//
-// 后端 policy.Policy 字段：id, name, category_id, severity, action, is_enabled, description
-// 前端 mocks/nebula.ts Rule 字段：id, name, scope, field, match, action, priority,
-// enabled, builtin, hits。结构不一一对应（UI 的 field/match/scope 在后端是
-// /policies/{id}/rules 子资源），本适配先聚焦"主列表 + 基本 CRUD"，
-// 子条件链由 PageRuleEdit 后续单独接 /rules 端点。
+// 端点（waf-control feat/backend-policy 起，与前端 mocks/nebula.ts Rule 列对齐）：
+//   GET    /api/v1/policies                          列表
+//   POST   /api/v1/policies                          新建
+//   GET    /api/v1/policies/{id}                     详情
+//   PUT    /api/v1/policies/{id}                     编辑（含 enabled / priority / scope / ...）
+//   DELETE /api/v1/policies/{id}                     删除
+//   POST   /api/v1/policies/{id}/hit  { delta }      agent 命中计数
 
 import axios from 'axios'
 import { useAuthStore } from '@/store/auth'
@@ -16,12 +16,20 @@ interface BackendPolicy {
   id: number
   name: string
   category_id?: number | null
-  severity: string         // low / medium / high / critical
-  action: string           // block / allow / log / rate / challenge
+  severity: string // low / medium / high / critical
+  action: string // block / allow / log / rate / challenge
   is_enabled: boolean
   description?: string
   created_at?: string
   updated_at?: string
+  // migration 000012 起
+  scope: string
+  field: string
+  match: string
+  priority: number
+  builtin: boolean
+  hits: number
+  last_hit_at?: string | null
 }
 
 function authHeader(): Record<string, string> {
@@ -46,18 +54,18 @@ function mapAction(a: string): UiRule['action'] {
   }
 }
 
-function adapt(p: BackendPolicy, idx: number): UiRule {
+function adapt(p: BackendPolicy): UiRule {
   return {
     id: String(p.id),
     name: p.name,
-    scope: p.description || '全部站点',
-    field: '—', // 详细字段在 /policies/{id}/rules 里
-    match: p.severity || '—',
+    scope: p.scope || '全部站点',
+    field: p.field || '—',
+    match: p.match || p.severity || '—',
     action: mapAction(p.action),
-    priority: idx + 1,
+    priority: p.priority ?? 100,
     enabled: p.is_enabled,
-    builtin: false,
-    hits: 0,
+    builtin: !!p.builtin,
+    hits: p.hits ?? 0,
   }
 }
 
@@ -66,42 +74,61 @@ export async function listRules(): Promise<UiRule[]> {
     '/api/v1/policies',
     { headers: authHeader(), params: { page: 1, page_size: 200 } },
   )
-  // Handler 写法不一，data/items/policies 三种可能 envelope 都兜
   const arr = res.data.data ?? res.data.items ?? res.data.policies ?? []
   return arr.map(adapt)
 }
 
-export interface CreateRulePayload {
+export interface SaveRulePayload {
   name: string
   description?: string
   severity?: string
   action: UiRule['action']
   enabled?: boolean
+  scope?: string
+  field?: string
+  match?: string
+  priority?: number
+  builtin?: boolean
 }
 
-export async function createRule(p: CreateRulePayload): Promise<UiRule> {
-  const body = {
+function toBackend(p: Partial<SaveRulePayload>) {
+  return {
     name: p.name,
-    description: p.description ?? '',
-    severity: p.severity ?? 'medium',
+    description: p.description,
+    severity: p.severity,
     action: p.action,
-    is_enabled: p.enabled !== false,
+    is_enabled: p.enabled,
+    scope: p.scope,
+    field: p.field,
+    match: p.match,
+    priority: p.priority,
+    builtin: p.builtin,
   }
-  const res = await axios.post<BackendPolicy>('/api/v1/policies', body, { headers: authHeader() })
-  return adapt(res.data, 0)
 }
 
-export async function updateRule(id: string, p: Partial<CreateRulePayload> & { enabled?: boolean }): Promise<UiRule> {
-  const body: Record<string, unknown> = {}
-  if (p.name !== undefined) body.name = p.name
-  if (p.description !== undefined) body.description = p.description
-  if (p.severity !== undefined) body.severity = p.severity
-  if (p.action !== undefined) body.action = p.action
-  if (p.enabled !== undefined) body.is_enabled = p.enabled
-  const res = await axios.put<BackendPolicy>(`/api/v1/policies/${id}`, body, { headers: authHeader() })
-  return adapt(res.data, 0)
+export async function createRule(p: SaveRulePayload): Promise<UiRule> {
+  const res = await axios.post<BackendPolicy>('/api/v1/policies', toBackend(p), { headers: authHeader() })
+  return adapt(res.data)
 }
 
-export async function deleteRule(id: string): Promise<void> {
+export async function updateRule(id: string | number, p: Partial<SaveRulePayload>): Promise<UiRule> {
+  const res = await axios.put<BackendPolicy>(`/api/v1/policies/${id}`, toBackend(p), { headers: authHeader() })
+  return adapt(res.data)
+}
+
+export async function deleteRule(id: string | number): Promise<void> {
   await axios.delete(`/api/v1/policies/${id}`, { headers: authHeader() })
+}
+
+export async function toggleRule(id: string | number, enabled: boolean): Promise<UiRule> {
+  return updateRule(id, { enabled })
+}
+
+export async function incrementHits(id: string | number, delta = 1): Promise<UiRule> {
+  const res = await axios.post<BackendPolicy>(
+    `/api/v1/policies/${id}/hit`,
+    { delta },
+    { headers: authHeader() },
+  )
+  return adapt(res.data)
 }
