@@ -59,6 +59,8 @@ export interface Rule {
   enabled: boolean
   builtin: boolean
   hits: number
+  /** 防护模块分类：sqli / xss / rce / lfi-rfi / bot / rate-limit / ip-reputation / virtual-patches / custom */
+  category?: string
 }
 
 export interface Alert {
