@@ -1,8 +1,9 @@
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Card, Icon, type IconName, Tag, Button, Tabs, Toggle, Sparkline } from '@/components/ui'
 import { Donut } from '@/components/charts'
-import { RULES, type Rule } from '@/mocks/nebula'
+import { type Rule } from '@/mocks/nebula'
+import * as policyApi from '@/api/live/policy'
 import RuleEdit from './RuleEdit'
 
 type TabKey = 'modules' | 'rules' | 'acl' | 'bot' | 'api'
@@ -10,9 +11,19 @@ type TabKey = 'modules' | 'rules' | 'acl' | 'bot' | 'api'
 function PolicyPage() {
   const nav = useNavigate()
   const [tab, setTab] = useState<TabKey>('rules')
-  const [rules, setRules] = useState<Rule[]>(RULES)
+  const [rules, setRules] = useState<Rule[]>([])
   const dragSrcRef = useRef<string | null>(null)
   const [dragOver, setDragOver] = useState<string | null>(null)
+
+  useEffect(() => {
+    policyApi
+      .listRules()
+      .then(setRules)
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[policy api]', err)
+      })
+  }, [])
 
   const moveRule = (fromId: string, toId: string) => {
     if (fromId === toId) return
