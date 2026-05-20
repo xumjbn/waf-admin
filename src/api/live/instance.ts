@@ -66,6 +66,19 @@ interface BackendHAGroup {
   updated_at: string
 }
 
+/** UI 详情模态需要的集群详情结构（带 node_ids + description + raw algo） */
+export interface ClusterDetail {
+  id: string                  // 字符串化的后端 ID
+  rawAlgo: string             // 后端原始 algo enum（用于 select 回显）
+  name: string
+  vip: string
+  state: 'ok' | 'warn' | 'critical'
+  siteCount: number
+  description: string
+  nodes: number
+  nodeIds: string[]           // 当前已绑定的 node_id 列表
+}
+
 /** UI 表渲染需要的 HA 行结构 */
 export interface HAGroupRow {
   id: number
@@ -129,6 +142,22 @@ function adaptInstance(b: BackendInstance, clusterByNode: Map<string, string>): 
     tp: b.network_io || '—',
     state: mapStatus(b.status),
     uptime: deriveUptime(b.last_seen),
+  }
+}
+
+function adaptClusterDetail(b: BackendCluster): ClusterDetail {
+  const stateNorm: ClusterDetail['state'] =
+    b.state === 'warn' || b.state === 'critical' ? b.state : 'ok'
+  return {
+    id: String(b.id),
+    rawAlgo: b.algo,
+    name: b.name,
+    vip: b.vip,
+    state: stateNorm,
+    siteCount: b.site_count ?? 0,
+    description: b.description ?? '',
+    nodes: b.nodes ?? (b.node_ids ? b.node_ids.length : 0),
+    nodeIds: b.node_ids ?? [],
   }
 }
 
@@ -252,6 +281,14 @@ export async function listClusters(): Promise<Cluster[]> {
     headers: authHeader(),
   })
   return (res.data.clusters ?? []).map(adaptCluster)
+}
+
+/** 详情模态用：单个集群，含 node_ids 列表。后端响应 { cluster: BackendCluster } */
+export async function getClusterDetail(id: string | number): Promise<ClusterDetail> {
+  const res = await axios.get<{ cluster: BackendCluster }>(`/api/v1/clusters/${id}`, {
+    headers: authHeader(),
+  })
+  return adaptClusterDetail(res.data.cluster)
 }
 
 export async function createCluster(payload: {

@@ -3,7 +3,7 @@ import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Card, Icon, KPI, Tag, Bar, Button } from '@/components/ui'
 import type { Instance, Cluster } from '@/mocks/nebula'
 import * as instanceApi from '@/api/live/instance'
-import type { HAGroupRow } from '@/api/live/instance'
+import type { HAGroupRow, ClusterDetail } from '@/api/live/instance'
 import InstanceDetail from './InstanceDetail'
 
 function InstancesPage() {
@@ -21,6 +21,7 @@ function InstancesPage() {
   }>({})
   const [showNodeModal, setShowNodeModal] = useState(false)
   const [showClusterModal, setShowClusterModal] = useState(false)
+  const [editingClusterId, setEditingClusterId] = useState<string | null>(null)
 
   const refresh = async () => {
     setLoading(true)
@@ -107,6 +108,8 @@ function InstancesPage() {
     const c = await instanceApi.createCluster(payload)
     setClusters(prev => [...prev, c])
     setShowClusterModal(false)
+    // 创建完直接打开详情让用户绑节点（之前的痛点：建完没地方加成员）
+    setEditingClusterId(c.id)
   }
 
   const switchHA = async (row: HAGroupRow) => {
@@ -201,7 +204,12 @@ function InstancesPage() {
             clusters.map(c => (
               <div
                 key={c.id}
-                style={{ padding: '12px 0', borderBottom: '1px solid var(--line-2)' }}
+                onClick={() => setEditingClusterId(c.id)}
+                style={{
+                  padding: '12px 0',
+                  borderBottom: '1px solid var(--line-2)',
+                  cursor: 'pointer',
+                }}
               >
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
@@ -217,9 +225,12 @@ function InstancesPage() {
                     <span className="fw-700 text-0 fs-13">{c.name}</span>
                     <span className="mono fs-11 muted">{c.id}</span>
                   </div>
-                  <Tag kind={c.state === 'ok' ? 'ok' : 'warn'}>
-                    {c.state === 'ok' ? '健康' : '降级'}
-                  </Tag>
+                  <div className="flex items-center gap-2">
+                    <Tag kind={c.state === 'ok' ? 'ok' : 'warn'}>
+                      {c.state === 'ok' ? '健康' : '降级'}
+                    </Tag>
+                    <Icon name="chevron-right" size={13} style={{ color: 'var(--text-3)' }} />
+                  </div>
                 </div>
                 <div className="row r-4 fs-11" style={{ gap: 12 }}>
                   <div>
@@ -443,6 +454,14 @@ function InstancesPage() {
           onSubmit={submitCluster}
         />
       )}
+      {editingClusterId && (
+        <ClusterDetailModal
+          clusterId={editingClusterId}
+          allInstances={list}
+          onClose={() => setEditingClusterId(null)}
+          onChanged={refresh}
+        />
+      )}
     </>
   )
 }
@@ -621,6 +640,481 @@ function AddClusterModal(props: {
         error={error}
       />
     </ModalShell>
+  )
+}
+
+// ---------- 弹窗：集群详情 / 编辑 / 成员管理 ----------
+// 这是『集群编排』的核心交互入口。打开后做四件事：
+//   1. 展示集群基本信息（name / VIP / algo / state / description / 创建时间）
+//   2. 编辑表单（inline 保存）
+//   3. 成员管理：当前节点列表（带 role 切换 + 移除）+ 添加成员下拉
+//   4. 危险区：删除集群（双重确认）
+function ClusterDetailModal(props: {
+  clusterId: string
+  allInstances: Instance[]
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const [detail, setDetail] = useState<ClusterDetail | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  // 编辑态
+  const [name, setName] = useState('')
+  const [vip, setVip] = useState('')
+  const [algo, setAlgo] = useState('round-robin')
+  const [state, setState] = useState<'ok' | 'warn' | 'critical'>('ok')
+  const [description, setDescription] = useState('')
+  const [dirty, setDirty] = useState(false)
+
+  // 添加成员
+  const [addNodeId, setAddNodeId] = useState('')
+  const [addRole, setAddRole] = useState<'primary' | 'standby'>('primary')
+
+  const refresh = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const d = await instanceApi.getClusterDetail(props.clusterId)
+      setDetail(d)
+      setName(d.name)
+      setVip(d.vip)
+      setAlgo(d.rawAlgo || 'round-robin')
+      setState(d.state)
+      setDescription(d.description)
+      setDirty(false)
+      // 默认选第一个未被本集群绑定的实例
+      const unbound = props.allInstances.find(i => !d.nodeIds.includes(i.id))
+      setAddNodeId(unbound?.id ?? '')
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.clusterId])
+
+  const saveEdits = async () => {
+    if (!detail) return
+    setBusy(true)
+    setError(null)
+    try {
+      await instanceApi.updateCluster(detail.id, {
+        name: name.trim(),
+        vip: vip.trim(),
+        algo,
+        state,
+        description: description.trim(),
+      })
+      setDirty(false)
+      props.onChanged()
+      await refresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const addMember = async () => {
+    if (!detail || !addNodeId) return
+    setBusy(true)
+    setError(null)
+    try {
+      await instanceApi.assignClusterNode(detail.id, addNodeId, addRole)
+      props.onChanged()
+      await refresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removeMember = async (nodeId: string) => {
+    if (!detail) return
+    if (!window.confirm(`确认从『${detail.name}』移除节点 ${nodeId}？\n该节点仍会在线，仅解除集群归属。`))
+      return
+    setBusy(true)
+    setError(null)
+    try {
+      await instanceApi.removeClusterNode(detail.id, nodeId)
+      props.onChanged()
+      await refresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const changeRole = async (nodeId: string, nextRole: 'primary' | 'standby') => {
+    if (!detail) return
+    setBusy(true)
+    setError(null)
+    try {
+      await instanceApi.assignClusterNode(detail.id, nodeId, nextRole)
+      props.onChanged()
+      await refresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const deleteCluster = async () => {
+    if (!detail) return
+    if (!window.confirm(`⚠️ 危险操作\n\n确认删除集群『${detail.name}』(${detail.id})？\n\n所有节点归属关系会被清除（节点本身不受影响）。此操作不可撤销。`))
+      return
+    setBusy(true)
+    try {
+      await instanceApi.deleteCluster(detail.id)
+      props.onChanged()
+      props.onClose()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  // 实例 → 行渲染用
+  const instanceByID = useMemo(() => {
+    const m = new Map<string, Instance>()
+    for (const i of props.allInstances) m.set(i.id, i)
+    return m
+  }, [props.allInstances])
+
+  const unboundInstances = useMemo(() => {
+    if (!detail) return [] as Instance[]
+    return props.allInstances.filter(i => !detail.nodeIds.includes(i.id))
+  }, [props.allInstances, detail])
+
+  return (
+    <div
+      onClick={props.onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(13,10,24,.62)',
+        backdropFilter: 'blur(4px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        style={{
+          width: 720,
+          maxWidth: 'calc(100vw - 32px)',
+          maxHeight: 'calc(100vh - 64px)',
+          overflow: 'auto',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--line-strong)',
+          borderRadius: 12,
+          padding: 24,
+          boxShadow: '0 24px 80px rgba(0,0,0,.45)',
+        }}
+      >
+        {loading || !detail ? (
+          <div className="muted fs-13" style={{ padding: 32, textAlign: 'center' }}>
+            {error ? `加载失败：${error}` : '加载集群详情…'}
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      background: detail.state === 'ok' ? '#10b981' : '#f59e0b',
+                      boxShadow: `0 0 6px ${detail.state === 'ok' ? '#10b981' : '#f59e0b'}`,
+                    }}
+                  />
+                  <div className="fw-700 text-0 fs-16">{detail.name}</div>
+                  <span className="mono fs-12 muted">ID {detail.id}</span>
+                </div>
+                <div className="muted fs-12 mt-1">
+                  {detail.nodes} 节点 · {detail.siteCount} 站点 · VIP {detail.vip || '—'}
+                </div>
+              </div>
+              <Button variant="ghost" onClick={props.onClose}>
+                <Icon name="x" size={13} className="ico" />
+                关闭
+              </Button>
+            </div>
+
+            {error && (
+              <div
+                className="fs-12 mb-3"
+                style={{
+                  padding: '8px 12px',
+                  background: 'var(--bg-danger-1, #fee2e2)',
+                  color: 'var(--text-danger, #b91c1c)',
+                  borderRadius: 6,
+                }}
+              >
+                {error}
+              </div>
+            )}
+
+            {/* —— 基本信息（可编辑） —— */}
+            <div
+              className="fw-700 text-0 fs-13"
+              style={{ marginTop: 4, marginBottom: 10 }}
+            >
+              基本信息
+            </div>
+            <Field label="集群名称" required>
+              <input
+                className="input"
+                value={name}
+                onChange={e => {
+                  setName(e.target.value)
+                  setDirty(true)
+                }}
+              />
+            </Field>
+            <div className="row r-1-1 gap-3">
+              <Field label="VIP" hint="对外浮动 IP（由 keepalived/LVS 维护）">
+                <input
+                  className="input"
+                  value={vip}
+                  onChange={e => {
+                    setVip(e.target.value)
+                    setDirty(true)
+                  }}
+                />
+              </Field>
+              <Field label="调度算法">
+                <select
+                  className="select"
+                  value={algo}
+                  onChange={e => {
+                    setAlgo(e.target.value)
+                    setDirty(true)
+                  }}
+                >
+                  <option value="round-robin">round-robin · 加权轮询</option>
+                  <option value="least-conn">least-conn · 最小连接数</option>
+                  <option value="ip-hash">ip-hash · 会话粘滞</option>
+                  <option value="sticky">sticky · 自定义粘滞</option>
+                </select>
+              </Field>
+            </div>
+            <Field label="状态">
+              <select
+                className="select"
+                value={state}
+                onChange={e => {
+                  setState(e.target.value as 'ok' | 'warn' | 'critical')
+                  setDirty(true)
+                }}
+              >
+                <option value="ok">ok · 健康</option>
+                <option value="warn">warn · 降级</option>
+                <option value="critical">critical · 严重</option>
+              </select>
+            </Field>
+            <Field label="备注">
+              <textarea
+                className="input"
+                rows={2}
+                value={description}
+                onChange={e => {
+                  setDescription(e.target.value)
+                  setDirty(true)
+                }}
+                style={{ resize: 'vertical' }}
+              />
+            </Field>
+            <div className="flex" style={{ justifyContent: 'flex-end', marginBottom: 18 }}>
+              <Button
+                variant={dirty ? 'pri' : 'ghost'}
+                disabled={!dirty || busy}
+                onClick={saveEdits}
+              >
+                <Icon name="check" size={13} className="ico" />
+                {busy ? '保存中…' : dirty ? '保存修改' : '已保存'}
+              </Button>
+            </div>
+
+            {/* —— 成员节点 —— */}
+            <div className="fw-700 text-0 fs-13" style={{ marginBottom: 10 }}>
+              成员节点（{detail.nodes}）
+            </div>
+            {detail.nodeIds.length === 0 ? (
+              <div
+                className="muted fs-12"
+                style={{
+                  padding: '16px 0',
+                  textAlign: 'center',
+                  border: '1px dashed var(--line)',
+                  borderRadius: 8,
+                  marginBottom: 10,
+                }}
+              >
+                还没有节点加入此集群。请在下方下拉里选实例添加。
+              </div>
+            ) : (
+              <table style={{ marginBottom: 10 }}>
+                <thead>
+                  <tr>
+                    <th>节点 ID</th>
+                    <th>IP</th>
+                    <th>状态</th>
+                    <th>角色</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.nodeIds.map(nid => {
+                    const inst = instanceByID.get(nid)
+                    return (
+                      <tr key={nid}>
+                        <td className="mono fw-600">{nid}</td>
+                        <td className="mono fs-12 muted">{inst?.ip ?? '—'}</td>
+                        <td>
+                          {inst ? (
+                            <Tag
+                              kind={
+                                inst.state === 'online'
+                                  ? 'ok'
+                                  : inst.state === 'busy'
+                                    ? 'warn'
+                                    : 'danger'
+                              }
+                            >
+                              <span className="dot" />
+                              {inst.state === 'online'
+                                ? '在线'
+                                : inst.state === 'busy'
+                                  ? '繁忙'
+                                  : '离线'}
+                            </Tag>
+                          ) : (
+                            <Tag kind="def">未连接</Tag>
+                          )}
+                        </td>
+                        <td>
+                          <select
+                            className="select"
+                            style={{ height: 26, fontSize: 12, padding: '0 6px' }}
+                            defaultValue="primary"
+                            onChange={e =>
+                              changeRole(nid, e.target.value as 'primary' | 'standby')
+                            }
+                          >
+                            <option value="primary">primary</option>
+                            <option value="standby">standby</option>
+                          </select>
+                        </td>
+                        <td className="fs-12">
+                          <span
+                            className="tbl-link"
+                            style={{ cursor: 'pointer', color: 'var(--danger)' }}
+                            onClick={() => removeMember(nid)}
+                          >
+                            移除
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+
+            {/* —— 添加成员 —— */}
+            <div
+              style={{
+                padding: 12,
+                border: '1px solid var(--line)',
+                borderRadius: 8,
+                background: 'var(--bg-0)',
+                marginBottom: 18,
+                display: 'grid',
+                gridTemplateColumns: '1fr 120px 80px',
+                gap: 8,
+                alignItems: 'center',
+              }}
+            >
+              <select
+                className="select"
+                value={addNodeId}
+                onChange={e => setAddNodeId(e.target.value)}
+                disabled={unboundInstances.length === 0}
+              >
+                {unboundInstances.length === 0 ? (
+                  <option value="">所有在线实例均已绑定</option>
+                ) : (
+                  <>
+                    <option value="">选择实例…</option>
+                    {unboundInstances.map(i => (
+                      <option key={i.id} value={i.id}>
+                        {i.id} ({i.ip})
+                      </option>
+                    ))}
+                  </>
+                )}
+              </select>
+              <select
+                className="select"
+                value={addRole}
+                onChange={e => setAddRole(e.target.value as 'primary' | 'standby')}
+              >
+                <option value="primary">primary</option>
+                <option value="standby">standby</option>
+              </select>
+              <Button
+                variant="pri"
+                onClick={addMember}
+                disabled={!addNodeId || busy}
+              >
+                <Icon name="plus" size={12} className="ico" />
+                添加
+              </Button>
+            </div>
+
+            {/* —— 危险区 —— */}
+            <div
+              style={{
+                padding: 12,
+                border: '1px dashed rgba(239,68,68,.4)',
+                borderRadius: 8,
+                background: 'rgba(239,68,68,.04)',
+              }}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="fw-600 fs-13" style={{ color: 'var(--danger)' }}>
+                    删除集群
+                  </div>
+                  <div className="muted fs-11 mt-1">
+                    会清除所有节点的归属（节点本身不受影响），站点若绑定此集群会变成无主状态。
+                  </div>
+                </div>
+                <Button variant="ghost" onClick={deleteCluster} disabled={busy}>
+                  <Icon name="trash" size={13} className="ico" />
+                  删除
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 
