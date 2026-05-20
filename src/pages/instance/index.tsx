@@ -1,12 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Card, Icon, KPI, Tag, Bar, Button } from '@/components/ui'
-import { CLUSTERS, INSTANCES, type Instance } from '@/mocks/nebula'
+import { CLUSTERS, type Instance } from '@/mocks/nebula'
+import * as instanceApi from '@/api/live/instance'
 import InstanceDetail from './InstanceDetail'
 
 function InstancesPage() {
   const nav = useNavigate()
-  const [list, setList] = useState<Instance[]>(INSTANCES)
+  const [list, setList] = useState<Instance[]>([])
+
+  useEffect(() => {
+    instanceApi
+      .listInstances()
+      .then(setList)
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[instance api]', err)
+      })
+  }, [])
 
   const restart = (id: string) => {
     const inst = list.find(x => x.id === id)
