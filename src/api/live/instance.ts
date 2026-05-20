@@ -266,6 +266,47 @@ export async function restartInstance(hostname: string, reason?: string): Promis
   )
 }
 
+// ---------- 实例管理员配置 ----------
+// 对应后端 instance_configs 表（migration 000021）。
+// 设计稿 InstanceDetail 配置 Tab 字段：role/gateway/dns/tags/enabled/
+// max_connections/max_qps/cpu_soft_limit/maintenance_window。
+//
+// 注：node_id 通常等于实例列表里的 i.id（Instance.id）。
+
+export interface InstanceConfig {
+  node_id: string
+  role: 'data' | 'control' | 'edge' | string
+  gateway: string
+  dns: string
+  tags: string
+  enabled: boolean
+  max_connections: number
+  max_qps: number
+  cpu_soft_limit: number
+  maintenance_window: string
+  updated_at?: string
+}
+
+export async function getInstanceConfig(nodeId: string): Promise<InstanceConfig> {
+  const res = await axios.get<InstanceConfig>(
+    `/api/v1/instances/${encodeURIComponent(nodeId)}/config`,
+    { headers: authHeader() },
+  )
+  return res.data
+}
+
+export async function updateInstanceConfig(
+  nodeId: string,
+  patch: Partial<InstanceConfig>,
+): Promise<InstanceConfig> {
+  const res = await axios.put<InstanceConfig>(
+    `/api/v1/instances/${encodeURIComponent(nodeId)}/config`,
+    patch,
+    { headers: authHeader() },
+  )
+  return res.data
+}
+
 /** 详情页用：拿单个实例。后端 /instances/detail 用 hostname 索引，
  *  这里允许传 id 或 hostname；先用 /instances/detail，404 时回退到 list 找 id 匹配。 */
 export async function getInstance(idOrHostname: string): Promise<Instance | null> {
