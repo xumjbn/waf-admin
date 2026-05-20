@@ -52,3 +52,41 @@ export async function listReportTasks(): Promise<ReportTask[]> {
   const arr = Array.isArray(res.data) ? res.data : (res.data.data ?? res.data.items ?? [])
   return arr.map(adapt)
 }
+
+// --- 统一列表（NW · 08 报表中心 - migration 000014 起）
+
+export type ReportKind = 'custom' | 'combined' | 'timing' | 'manual'
+
+export interface ReportUnifiedItem {
+  id: number
+  type: ReportKind
+  name: string
+  description: string
+  schedule: string
+  is_enabled: boolean
+  last_run_at?: string | null
+  next_run_at?: string | null
+  created_at: string
+}
+
+export async function listAllReports(): Promise<ReportUnifiedItem[]> {
+  const res = await axios.get<{ data: ReportUnifiedItem[] }>('/api/v1/reports/all', { headers: authHeader() })
+  return res.data.data ?? []
+}
+
+export async function runReport(kind: ReportKind, id: number): Promise<void> {
+  await axios.post(`/api/v1/reports/${kind}/${id}/run`, {}, { headers: authHeader() })
+}
+
+// 下载报表（浏览器自动触发文件下载）。
+export function downloadReportUrl(kind: ReportKind, id: number): string {
+  return `/api/v1/reports/${kind}/${id}/download`
+}
+
+export async function downloadReport(kind: ReportKind, id: number): Promise<Blob> {
+  const res = await axios.get(downloadReportUrl(kind, id), {
+    headers: authHeader(),
+    responseType: 'blob',
+  })
+  return res.data as Blob
+}
