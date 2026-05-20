@@ -1,13 +1,19 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Card, Icon, KPI, Tag, Button, Toggle } from '@/components/ui'
+import * as reportApi from '@/api/live/report'
 
 export default function ReportsPage() {
-  const [tasks, setTasks] = useState([
-    { n: '周安全态势', cr: '0 9 * * 1', next: '2026-05-18 09:00', on: true },
-    { n: '月度流量分析', cr: '0 8 1 * *', next: '2026-06-01 08:00', on: true },
-    { n: '日志归档', cr: '0 2 * * 0', next: '2026-05-24 02:00', on: true },
-    { n: '快速摘要', cr: '0 */6 * * *', next: '2026-05-17 18:00', on: false },
-  ])
+  const [tasks, setTasks] = useState<reportApi.ReportTask[]>([])
+
+  useEffect(() => {
+    reportApi
+      .listReportTasks()
+      .then(setTasks)
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.error('[report api]', err)
+      })
+  }, [])
 
   return (
     <>
