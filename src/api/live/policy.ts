@@ -31,6 +31,7 @@ interface BackendPolicy {
   hits: number
   last_hit_at?: string | null
   modsec_id?: string // migration 000018 起，仅 builtin 规则有
+  category?: string  // migration 000019：防护模块（sqli/xss/rce/.../custom）
 }
 
 function authHeader(): Record<string, string> {
@@ -69,6 +70,7 @@ function adapt(p: BackendPolicy): UiRule {
     enabled: p.is_enabled,
     builtin: !!p.builtin,
     hits: p.hits ?? 0,
+    category: p.category || 'custom',
   }
 }
 

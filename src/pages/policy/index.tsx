@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Card, Icon, type IconName, Tag, Button, Tabs, Toggle, Sparkline } from '@/components/ui'
 import { Donut } from '@/components/charts'
@@ -228,6 +228,36 @@ function ProtectionModules() {
   )
 }
 
+// 防护模块字符串 → UI 元数据。category 字段来自 modsec 规则目录名 + 'custom'。
+const CATEGORY_META: Record<
+  string,
+  { label: string; ico: IconName; color: string }
+> = {
+  sqli: { label: 'SQL 注入', ico: 'database', color: '#ef4444' },
+  xss: { label: 'XSS', ico: 'fire', color: '#f59e0b' },
+  rce: { label: 'RCE / 反序列化', ico: 'crosshair', color: '#a855f7' },
+  'lfi-rfi': { label: '路径遍历 / SSRF', ico: 'flow', color: '#22d3ee' },
+  bot: { label: 'Bot / 扫描器', ico: 'eye', color: '#ec4899' },
+  'rate-limit': { label: '限速 / 爆破', ico: 'activity', color: '#10b981' },
+  'ip-reputation': { label: 'IP 信誉', ico: 'lock', color: '#3b82f6' },
+  'virtual-patches': { label: '虚拟补丁 CVE', ico: 'shield', color: '#dc2626' },
+  custom: { label: '自定义', ico: 'sparkles', color: '#8e84a3' },
+}
+const CATEGORY_ORDER = [
+  'sqli',
+  'xss',
+  'rce',
+  'lfi-rfi',
+  'bot',
+  'rate-limit',
+  'ip-reputation',
+  'virtual-patches',
+  'custom',
+]
+function categoryMeta(c?: string) {
+  return CATEGORY_META[c || 'custom'] ?? CATEGORY_META.custom
+}
+
 function RuleEngine({
   rules,
   onMove,
@@ -245,6 +275,37 @@ function RuleEngine({
   dragOver: string | null
   setDragOver: (id: string | null) => void
 }) {
+  const [activeCat, setActiveCat] = useState<string>('all')
+  const [keyword, setKeyword] = useState('')
+
+  // 按分类聚合数量；保持 CATEGORY_ORDER 序，没规则的分类也展示（chip 显示 0）
+  const countByCat = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const r of rules) {
+      const c = r.category || 'custom'
+      m[c] = (m[c] ?? 0) + 1
+    }
+    return m
+  }, [rules])
+
+  const visibleCats = useMemo(
+    () => CATEGORY_ORDER.filter(c => (countByCat[c] ?? 0) > 0),
+    [countByCat],
+  )
+
+  const filtered = useMemo(() => {
+    const kw = keyword.trim().toLowerCase()
+    return rules.filter(r => {
+      if (activeCat !== 'all' && (r.category || 'custom') !== activeCat) return false
+      if (kw) {
+        const hay =
+          r.name.toLowerCase() + ' ' + r.id + ' ' + (r.field || '').toLowerCase()
+        if (!hay.includes(kw)) return false
+      }
+      return true
+    })
+  }, [rules, activeCat, keyword])
+
   return (
     <div className="row r-1-2 gap-3">
       <Card title="规则统计" ico="rules" bracketed>
@@ -308,16 +369,57 @@ function RuleEngine({
       <Card
         title="规则优先级"
         ico="grip"
-        meta="拖拽行调整优先级 · 越靠前匹配越早"
+        meta={`${filtered.length} / ${rules.length} 条 · 拖拽调整优先级`}
         actions={
           <div className="flex gap-2">
-            <input className="input" placeholder="搜索规则名 / ID" style={{ width: 240 }} />
+            <input
+              className="input"
+              placeholder="搜索规则名 / ID / 字段"
+              style={{ width: 240 }}
+              value={keyword}
+              onChange={e => setKeyword(e.target.value)}
+            />
             <select className="select">
               <option>全部站点</option>
             </select>
           </div>
         }
       >
+        {/* 防护模块过滤 chip bar */}
+        <div
+          className="flex"
+          style={{
+            flexWrap: 'wrap',
+            gap: 6,
+            marginBottom: 12,
+            padding: '8px 0',
+            borderBottom: '1px dashed var(--line-2)',
+          }}
+        >
+          <CatChip
+            active={activeCat === 'all'}
+            label="全部"
+            count={rules.length}
+            color="var(--brand-1)"
+            ico="grid"
+            onClick={() => setActiveCat('all')}
+          />
+          {visibleCats.map(c => {
+            const meta = categoryMeta(c)
+            return (
+              <CatChip
+                key={c}
+                active={activeCat === c}
+                label={meta.label}
+                count={countByCat[c] ?? 0}
+                color={meta.color}
+                ico={meta.ico}
+                onClick={() => setActiveCat(c)}
+              />
+            )
+          })}
+        </div>
+
         <div>
           <div
             style={{
@@ -350,7 +452,15 @@ function RuleEngine({
             <span>命中</span>
             <span>状态</span>
           </div>
-          {rules.map(r => (
+          {filtered.length === 0 && (
+            <div
+              className="muted fs-12"
+              style={{ padding: '40px 0', textAlign: 'center' }}
+            >
+              该分类下暂无规则{keyword && `（关键字 "${keyword}"）`}
+            </div>
+          )}
+          {filtered.map(r => (
             <div
               key={r.id}
               draggable
@@ -399,17 +509,35 @@ function RuleEngine({
               </span>
               <div style={{ minWidth: 0 }}>
                 <div
-                  className="fw-600 text-0 fs-13"
+                  className="fw-600 text-0 fs-13 flex items-center gap-2"
                   style={{
                     overflow: 'hidden',
-                    textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
                   }}
                   title={r.name}
                 >
-                  {r.name}
+                  {/* 分类色点 */}
+                  <span
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: categoryMeta(r.category).color,
+                      flexShrink: 0,
+                    }}
+                    title={categoryMeta(r.category).label}
+                  />
+                  <span
+                    style={{
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {r.name}
+                  </span>
                   {r.builtin && (
-                    <Tag kind="info" style={{ marginLeft: 8, fontSize: 9 }}>
+                    <Tag kind="info" style={{ marginLeft: 4, fontSize: 9 }}>
                       内置
                     </Tag>
                   )}
@@ -422,7 +550,7 @@ function RuleEngine({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {r.scope} · {r.id}
+                  {categoryMeta(r.category).label} · {r.scope} · {r.id}
                 </div>
               </div>
               <div
@@ -495,6 +623,60 @@ function RuleEngine({
         </div>
       </Card>
     </div>
+  )
+}
+
+function CatChip({
+  active,
+  label,
+  count,
+  color,
+  ico,
+  onClick,
+}: {
+  active: boolean
+  label: string
+  count: number
+  color: string
+  ico: IconName
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '5px 10px',
+        borderRadius: 999,
+        border: '1px solid ' + (active ? color : 'var(--line)'),
+        background: active ? color + '22' : 'transparent',
+        color: active ? color : 'var(--text-2)',
+        cursor: 'pointer',
+        fontSize: 12,
+        fontWeight: active ? 600 : 500,
+        transition: 'all .15s',
+      }}
+    >
+      <Icon name={ico} size={12} />
+      <span>{label}</span>
+      <span
+        style={{
+          padding: '1px 6px',
+          borderRadius: 999,
+          background: active ? color : 'var(--bg-2)',
+          color: active ? '#fff' : 'var(--text-2)',
+          fontSize: 10.5,
+          fontFamily: 'JetBrains Mono',
+          fontWeight: 700,
+          minWidth: 18,
+          textAlign: 'center',
+        }}
+      >
+        {count}
+      </span>
+    </button>
   )
 }
 
