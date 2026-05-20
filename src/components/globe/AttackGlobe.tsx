@@ -1,24 +1,25 @@
 // 全球攻击轨迹（dashboard 首页 /aggregation 用）
 //
-// 实现：echarts + echarts-gl 的 globe 系列 —— 真 3D 地球。
-//   · world.json (public/maps) 作为地表纹理 + 国家边界
-//   · 攻击源用真实 IP 经纬度（attack_logs.lat / .lng）打散点（scatter3D）
-//   · 攻击弧线 src → HQ 用 lines3D 动画粒子
-//   · 国家级聚合作为额外柱状层（series.bar3D 或 scatter3D，按 count 调大小）
-//   · 自动旋转 + 鼠标拖拽旋转 + 滚轮缩放（globe.viewControl 开关 + autoRotate）
+// 实现：echarts + echarts-gl 的 globe 系列（3D 地球）。
+// 渲染失败时显示降级的 2D 占位条，不会让整页崩。
 //
 // 数据流：dashboard 拉真 attack_logs → 传 attacks prop（含 lat/lng/country/typeColor）。
-// 这里负责把它们映射成 echarts series。不再有内部 mock 数据。
+// 三层数据：
+//   1) bar3D    国家级聚合，柱高 = 攻击次数
+//   2) scatter3D 单 IP 真实经纬度散点
+//   3) lines3D   src(lat,lng) → HQ 弧线 + 粒子动画
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-// echarts 6 已经默认带 CanvasRenderer + 全部组件；只要导一次 echarts-gl 注册 globe 系列即可
+import { Component, useEffect, useMemo, useState } from 'react'
+import type { ErrorInfo, ReactNode } from 'react'
+import ReactECharts from 'echarts-for-react'
 import * as echarts from 'echarts'
 import 'echarts-gl'
+import type { EChartsOption } from 'echarts'
 import type { AttackEvent } from '@/mocks/nebula'
 
 let worldRegistered = false
-async function ensureWorldMap() {
-  if (worldRegistered) return
+async function ensureWorldMap(): Promise<boolean> {
+  if (worldRegistered) return true
   try {
     const res = await fetch('/maps/world.json')
     const json = await res.json()
@@ -28,51 +29,107 @@ async function ensureWorldMap() {
     if (json?.crs) delete json.crs
     echarts.registerMap('world', json)
     worldRegistered = true
+    return true
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn('[AttackGlobe] world.json load failed', e)
+    return false
   }
 }
 
-const HQ = { lat: 32.0, lng: 116.0, name: '防护中心' } // 北京附近，作为攻击弧线目的地
+const HQ = { lat: 32.0, lng: 116.0, name: '防护中心' }
 
 export interface AttackGlobeProps {
-  /** 真实攻击事件列表；含 lat/lng/country/typeColor */
   attacks: AttackEvent[]
-  /** 高度（px）；宽度自适应父容器 */
   height?: number
-  /** 自动旋转。默认 true */
   autoRotate?: boolean
-  /** 自动旋转速度（°/s）。默认 6 */
   autoRotateSpeed?: number
 }
 
-export function AttackGlobe({
+interface GlobeBoundaryState {
+  hasError: boolean
+  msg: string
+}
+class GlobeErrorBoundary extends Component<
+  { fallback: ReactNode; children: ReactNode },
+  GlobeBoundaryState
+> {
+  state: GlobeBoundaryState = { hasError: false, msg: '' }
+  static getDerivedStateFromError(err: unknown): GlobeBoundaryState {
+    return { hasError: true, msg: err instanceof Error ? err.message : String(err) }
+  }
+  componentDidCatch(err: Error, info: ErrorInfo) {
+    // eslint-disable-next-line no-console
+    console.error('[AttackGlobe] crashed:', err, info)
+  }
+  render() {
+    if (this.state.hasError) return <>{this.props.fallback}</>
+    return this.props.children
+  }
+}
+
+export function AttackGlobe(props: AttackGlobeProps) {
+  return (
+    <GlobeErrorBoundary fallback={<GlobeFallback height={props.height ?? 460} />}>
+      <GlobeInner {...props} />
+    </GlobeErrorBoundary>
+  )
+}
+
+function GlobeFallback({ height }: { height: number }) {
+  return (
+    <div
+      style={{
+        height,
+        display: 'grid',
+        placeItems: 'center',
+        background: 'var(--bg-2)',
+        border: '1px dashed var(--line-strong)',
+        borderRadius: 8,
+        color: 'var(--text-2)',
+        fontSize: 13,
+        lineHeight: 1.6,
+        padding: 16,
+        textAlign: 'center',
+      }}
+    >
+      <div>
+        <div className="fw-700 mb-2">3D 地球渲染失败</div>
+        <div className="muted fs-12">
+          浏览器可能未启用 WebGL，或 echarts-gl 与当前 echarts 版本不兼容。
+          <br />
+          实例与攻击日志数据不受影响 —— 可继续使用其他面板。
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function GlobeInner({
   attacks,
   height = 460,
   autoRotate = true,
   autoRotateSpeed = 6,
 }: AttackGlobeProps) {
-  const wrapRef = useRef<HTMLDivElement | null>(null)
-  const chartRef = useRef<echarts.ECharts | null>(null)
-  const [ready, setReady] = useState(false)
+  const [mapReady, setMapReady] = useState(false)
+  useEffect(() => {
+    ensureWorldMap().then(setMapReady)
+  }, [])
 
-  // 聚合：按 country 汇总点数、累计经纬度（用平均值作为国家中心点的近似）。
-  // 对每个国家保留实际 IP 的明细数组用于精确散点。
+  // 聚合 + 散点 + 弧线
   const { ipPoints, countryAgg, arcs } = useMemo(() => {
     const ipPoints: Array<{ name: string; value: [number, number, number]; color: string }> = []
-    const byCountry = new Map<
-      string,
-      { count: number; sumLat: number; sumLng: number }
-    >()
+    const byCountry = new Map<string, { count: number; sumLat: number; sumLng: number }>()
     const arcs: Array<{ coords: [[number, number], [number, number]]; color: string }> = []
 
     for (const a of attacks) {
-      if (!a.lat || !a.lng || (a.lat === 0 && a.lng === 0)) continue
+      if (!a || typeof a.lat !== 'number' || typeof a.lng !== 'number') continue
+      if (a.lat === 0 && a.lng === 0) continue
+      const color = a.typeColor || '#ec4899'
       ipPoints.push({
-        name: `${a.country} · ${a.ip}`,
+        name: `${a.country || '未知'} · ${a.ip}`,
         value: [a.lng, a.lat, 1],
-        color: a.typeColor || '#ec4899',
+        color,
       })
       const k = a.country || '未知'
       const cur = byCountry.get(k) ?? { count: 0, sumLat: 0, sumLng: 0 }
@@ -85,62 +142,35 @@ export function AttackGlobe({
           [a.lng, a.lat],
           [HQ.lng, HQ.lat],
         ],
-        color: a.typeColor || '#ec4899',
+        color,
       })
     }
 
-    const countryAgg: Array<{
-      name: string
-      value: [number, number, number]
-    }> = []
+    const countryAgg: Array<{ name: string; value: [number, number, number] }> = []
     byCountry.forEach((v, k) => {
       countryAgg.push({
         name: `${k} · ${v.count} 次`,
-        // bar3D / scatter3D 的 value: [lng, lat, magnitude]
         value: [v.sumLng / v.count, v.sumLat / v.count, v.count],
       })
     })
 
-    return { ipPoints, countryAgg, arcs }
+    return { ipPoints, countryAgg, arcs: arcs.slice(0, 200) }
   }, [attacks])
 
-  // 初始化：注册地图 → 构造 chart 实例
-  useEffect(() => {
-    ensureWorldMap().then(() => setReady(true))
-  }, [])
-
-  useEffect(() => {
-    if (!ready || !wrapRef.current) return
-    const inst = echarts.init(wrapRef.current)
-    chartRef.current = inst
-    const onResize = () => inst.resize()
-    window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      inst.dispose()
-      chartRef.current = null
-    }
-  }, [ready])
-
-  // 更新 option（数据变化时只 setOption，无需重建）
-  useEffect(() => {
-    const inst = chartRef.current
-    if (!inst) return
-    inst.setOption(
-      {
+  const option = useMemo<EChartsOption>(
+    () =>
+      ({
         backgroundColor: 'transparent',
         tooltip: {
-          formatter: (params: { name: string; value: unknown }) => params.name,
+          show: true,
           backgroundColor: 'rgba(13,10,24,.92)',
           borderColor: 'rgba(168,85,247,.4)',
           textStyle: { color: '#f3eaff', fontSize: 12 },
         },
+        // echarts-gl globe
         globe: {
-          // 地表色：深紫黑底
           environment: '#0a0518',
           baseColor: '#1a0b2e',
-          // 地图作为 surface texture（无外部纹理依赖；颜色由 regions 渲染）
-          // 直接用矢量 world.json
           shading: 'color',
           atmosphere: {
             show: true,
@@ -150,40 +180,27 @@ export function AttackGlobe({
             innerGlowPower: 2,
           },
           light: {
-            main: { color: '#fff', intensity: 1.1, shadow: false, alpha: 40, beta: 30 },
-            ambient: { color: '#a855f7', intensity: 0.35 },
+            main: { color: '#ffffff', intensity: 1.2, alpha: 40, beta: 30 },
+            ambient: { color: '#a855f7', intensity: 0.4 },
           },
           viewControl: {
             autoRotate,
             autoRotateSpeed,
-            autoRotateAfterStill: 4,        // 用户停手后 4s 恢复自动旋转
-            distance: 200,                   // 初始距离（越小越大）
-            minDistance: 120,                // 缩放上限（最近）
-            maxDistance: 320,                // 缩放下限（最远）
-            alpha: 15,                       // 初始视角 alpha (pitch)
-            beta: 30,                        // 初始视角 beta (yaw)
+            autoRotateAfterStill: 4,
+            distance: 200,
+            minDistance: 120,
+            maxDistance: 320,
+            alpha: 15,
+            beta: 30,
             damping: 0.85,
             rotateSensitivity: 1,
             zoomSensitivity: 1.4,
-            targetCoord: [HQ.lng, HQ.lat],   // 视点初始对准防护中心
+            targetCoord: [HQ.lng, HQ.lat],
           },
-          layers: [
-            {
-              type: 'overlay',
-              show: true,
-              shading: 'color',
-            },
-          ],
+          ...(mapReady ? { map: 'world' } : {}),
           regionHeight: 1,
-          displacementScale: 0,
-        },
-        // 用世界地图做地表色块（series.map3D 内嵌在 globe 里，但 globe series 自身
-        // 支持 geo3D-style regions —— 这里通过 regions 数组渲染国家轮廓）
-        geo3D: {
-          show: false, // 不画独立 geo3D，统一在 globe 上
         },
         series: [
-          // 1) 国家级聚合 —— bar3D，柱高 = 当国攻击次数
           {
             name: '国家攻击聚合',
             type: 'bar3D',
@@ -191,23 +208,13 @@ export function AttackGlobe({
             data: countryAgg,
             barSize: 0.6,
             minHeight: 0.8,
-            silent: false,
-            itemStyle: {
-              color: '#f59e0b',
-              opacity: 0.85,
-            },
+            itemStyle: { color: '#f59e0b', opacity: 0.85 },
             shading: 'color',
             emphasis: {
-              itemStyle: {
-                color: '#fbbf24',
-              },
-              label: {
-                show: true,
-                textStyle: { color: '#fff', fontSize: 12 },
-              },
+              itemStyle: { color: '#fbbf24' },
+              label: { show: true, textStyle: { color: '#fff', fontSize: 12 } },
             },
           },
-          // 2) 单 IP 精确散点 —— scatter3D
           {
             name: '攻击源 IP',
             type: 'scatter3D',
@@ -215,13 +222,14 @@ export function AttackGlobe({
             blendMode: 'lighter',
             symbolSize: 6,
             itemStyle: {
-              color: (p: { data: { color?: string } }) => p.data?.color || '#ec4899',
               opacity: 0.85,
               borderWidth: 0,
             },
+            // scatter3D 不支持按数据项 color 回调；统一颜色 + 单独再加一层 IP 散点彩色版会太重
+            // 这里用粉紫做整体色，让数量感知更强；分类色靠 lines3D 表达
+            color: '#ec4899',
             data: ipPoints,
           },
-          // 3) 攻击弧线 —— lines3D，从 src 到 HQ
           {
             name: '攻击轨迹',
             type: 'lines3D',
@@ -235,20 +243,15 @@ export function AttackGlobe({
               trailOpacity: 0.9,
               constantSpeed: 28,
             },
-            lineStyle: {
-              width: 1,
-              opacity: 0.55,
-              color: (p: { data: { color?: string } }) => p.data?.color || '#a855f7',
-            },
-            data: arcs.slice(0, 200), // 太多弧线会卡，截到 200
+            lineStyle: { width: 1, opacity: 0.55, color: '#a855f7' },
+            data: arcs,
           },
-          // 4) HQ 标记 —— 一个加粗散点
           {
             name: '防护中心',
             type: 'scatter3D',
             coordinateSystem: 'globe',
             symbolSize: 14,
-            itemStyle: { color: '#22d3ee', opacity: 1 },
+            color: '#22d3ee',
             label: {
               show: true,
               formatter: HQ.name,
@@ -260,24 +263,23 @@ export function AttackGlobe({
                 borderRadius: 4,
               },
             },
-            data: [
-              {
-                name: HQ.name,
-                value: [HQ.lng, HQ.lat, 1],
-              },
-            ],
+            data: [{ name: HQ.name, value: [HQ.lng, HQ.lat, 1] }],
           },
         ],
-      },
-      true,
-    )
-  }, [ready, ipPoints, countryAgg, arcs, autoRotate, autoRotateSpeed])
+      }) as unknown as EChartsOption,
+    [ipPoints, countryAgg, arcs, autoRotate, autoRotateSpeed, mapReady],
+  )
 
   return (
     <div style={{ position: 'relative', height }}>
-      <div ref={wrapRef} style={{ width: '100%', height: '100%' }} />
-
-      {/* 角标 HUD */}
+      <ReactECharts
+        option={option}
+        style={{ width: '100%', height: '100%' }}
+        notMerge
+        lazyUpdate
+        opts={{ renderer: 'canvas' }}
+      />
+      {/* HUD */}
       <div
         style={{
           position: 'absolute',
@@ -288,6 +290,7 @@ export function AttackGlobe({
           fontFamily: 'JetBrains Mono',
           letterSpacing: 1.2,
           textTransform: 'uppercase',
+          pointerEvents: 'none',
         }}
       >
         <div className="t-brand fw-700" style={{ fontSize: 12, marginBottom: 2 }}>
@@ -307,6 +310,7 @@ export function AttackGlobe({
           fontSize: 11,
           color: 'var(--text-3)',
           fontFamily: 'JetBrains Mono',
+          pointerEvents: 'none',
         }}
       >
         <div className="t-pink" style={{ fontWeight: 700, marginBottom: 2 }}>
@@ -324,6 +328,7 @@ export function AttackGlobe({
           color: 'var(--text-3)',
           fontFamily: 'JetBrains Mono',
           letterSpacing: 1,
+          pointerEvents: 'none',
         }}
       >
         AUTO-ROT · DRAG TO ROTATE · WHEEL TO ZOOM
