@@ -295,6 +295,37 @@ export async function getInstanceConfig(nodeId: string): Promise<InstanceConfig>
   return res.data
 }
 
+// 时序指标：GET /instances/{nodeId}/metrics-trend?hours=24&metric=requests_per_second
+// 数据源 = heartbeats（cpu/mem/disk）+ monitor_metrics（rps/conn/...）按时间桶聚合 AVG。
+export interface MetricsTrendPoint {
+  t: string  // RFC3339
+  v: number
+}
+export interface MetricsTrend {
+  node_id: string
+  metric: string
+  hours: number
+  bucket: string
+  points: MetricsTrendPoint[]
+}
+
+export async function getMetricsTrend(
+  nodeId: string,
+  opts?: { hours?: number; metric?: string },
+): Promise<MetricsTrend> {
+  const res = await axios.get<MetricsTrend>(
+    `/api/v1/instances/${encodeURIComponent(nodeId)}/metrics-trend`,
+    {
+      headers: authHeader(),
+      params: {
+        hours: opts?.hours ?? 24,
+        metric: opts?.metric ?? 'requests_per_second',
+      },
+    },
+  )
+  return res.data
+}
+
 export async function updateInstanceConfig(
   nodeId: string,
   patch: Partial<InstanceConfig>,
