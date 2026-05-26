@@ -210,13 +210,10 @@ export default function RuleEdit() {
           : 'pass') as 'block' | 'challenge' | 'rate' | 'allow' | 'log' | 'redirect' | 'pass',
       })
     } catch (e: unknown) {
-      setTestResult({
-        matched: false,
-        time: '0.000',
-        hitConds: [],
-        action: 'pass',
-      })
-      window.alert(`试运行失败：${e instanceof Error ? e.message : String(e)}`)
+      // 失败时**不**伪造 matched=false/action=pass —— 那会让用户误以为规则放行可疑请求。
+      // 清空 testResult，让 UI 显示『试运行未完成』而不是绿色 PASS。
+      setTestResult(null)
+      window.alert(`试运行失败 —— 无法判定命中状态：${e instanceof Error ? e.message : String(e)}`)
     }
   }
 

@@ -372,9 +372,42 @@ function GlobeInner({
       // 清掉残留 canvas，下次 mount 不会叠
       while (el.firstChild) el.removeChild(el.firstChild)
     }
-    // 主题切换、自动旋转开关会触发整体重建（这两个变化少见，重建可接受）
+    // 只在挂载/卸载时建/销毁 globe；palette 变化通过下面的 useEffect 增量更新颜色，
+    // 不再触发整个 three.js scene 重建（之前用户切深浅色会看到地球闪烁 1-3s）。
+    // autoRotate 与 autoRotateSpeed 变化则更新 controls，也不重建。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paletteKey, autoRotate, autoRotateSpeed])
+  }, [])
+
+  // palette 变更增量同步颜色到现有 globe，避免重建 three.js scene
+  useEffect(() => {
+    const inst = globeRef.current
+    if (!inst) return
+    try {
+      inst.backgroundColor('rgba(0,0,0,0)').atmosphereColor(palette.atmosphere)
+      const mat = inst.globeMaterial() as { color?: { set?: (c: string) => void } }
+      mat?.color?.set?.(palette.globeColor)
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const g = inst as any
+      g.polygonCapColor(() => palette.polygonCap)
+        .polygonSideColor(() => palette.polygonSide)
+        .polygonStrokeColor(() => palette.polygonStroke)
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+    } catch {
+      /* globe 实例可能在 cleanup 之间，忽略 */
+    }
+  }, [palette])
+
+  // autoRotate / 速度变化 → 仅更新 controls
+  useEffect(() => {
+    const inst = globeRef.current
+    if (!inst) return
+    const controls = inst.controls() as unknown as {
+      autoRotate: boolean
+      autoRotateSpeed: number
+    }
+    controls.autoRotate = autoRotate
+    controls.autoRotateSpeed = autoRotateSpeed
+  }, [autoRotate, autoRotateSpeed])
 
   // 数据更新 —— 不重建实例。globe.gl accessor 签名是 (obj: object) => T，
   // 这里把 obj 当 Arc/Point/Label 用，强制 cast。
@@ -416,27 +449,38 @@ function GlobeInner({
       .labelColor(() => palette.labelColor)
       .labelResolution(2)
 
-    // HQ 单独画一个 HTML 角标
+    // HQ 单独画一个 HTML 角标 —— 用 DOM API 而非 innerHTML 拼字符串，避免任何
+    // 未来如果 HQ.name 或 palette 字段被外部数据污染时产生 XSS。
     g.htmlElementsData([{ lat: HQ.lat, lng: HQ.lng, label: HQ.name }])
       .htmlLat((d: any) => d.lat)
       .htmlLng((d: any) => d.lng)
       .htmlAltitude(0.02)
       .htmlElement(() => {
-        const tpl = document.createElement('template')
-        tpl.innerHTML = `<div style="
-          display:inline-flex;align-items:center;gap:6px;
-          padding:4px 10px;border-radius:999px;
-          background:${palette.labelBg};
-          border:1px solid ${palette.hqColor};
-          color:${palette.hqColor};
-          font:600 11px/1 'JetBrains Mono', monospace;
-          white-space:nowrap;pointer-events:none;
-          box-shadow:0 0 12px ${palette.hqColor}88;
-        ">
-          <span style="width:6px;height:6px;border-radius:50%;background:${palette.hqColor}"></span>
-          ${HQ.name}
-        </div>`
-        return tpl.content.firstElementChild as HTMLElement
+        const wrap = document.createElement('div')
+        Object.assign(wrap.style, {
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '4px 10px',
+          borderRadius: '999px',
+          background: palette.labelBg,
+          border: `1px solid ${palette.hqColor}`,
+          color: palette.hqColor,
+          font: "600 11px/1 'JetBrains Mono', monospace",
+          whiteSpace: 'nowrap',
+          pointerEvents: 'none',
+          boxShadow: `0 0 12px ${palette.hqColor}88`,
+        } as Partial<CSSStyleDeclaration>)
+        const dot = document.createElement('span')
+        Object.assign(dot.style, {
+          width: '6px',
+          height: '6px',
+          borderRadius: '50%',
+          background: palette.hqColor,
+        } as Partial<CSSStyleDeclaration>)
+        wrap.appendChild(dot)
+        wrap.appendChild(document.createTextNode(' ' + HQ.name))
+        return wrap
       })
     /* eslint-enable @typescript-eslint/no-explicit-any */
   }, [arcs, points, labels, palette])

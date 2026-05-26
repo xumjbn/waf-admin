@@ -16,16 +16,19 @@ function PolicyPage() {
   const nav = useNavigate()
   const [tab, setTab] = useState<TabKey>('rules')
   const [rules, setRules] = useState<Rule[]>([])
+  const [rulesError, setRulesError] = useState<string | null>(null)
   const dragSrcRef = useRef<string | null>(null)
   const [dragOver, setDragOver] = useState<string | null>(null)
 
   useEffect(() => {
     policyApi
       .listRules()
-      .then(setRules)
+      .then(rs => {
+        setRules(rs)
+        setRulesError(null)
+      })
       .catch(err => {
-        // eslint-disable-next-line no-console
-        console.error('[policy api]', err)
+        setRulesError(err instanceof Error ? err.message : String(err))
       })
   }, [])
 
@@ -80,6 +83,20 @@ function PolicyPage() {
           </Button>
         </div>
       </div>
+
+      {rulesError && (
+        <div
+          className="fs-12 mb-3"
+          style={{
+            padding: '8px 12px',
+            background: 'var(--bg-danger-1, #fee2e2)',
+            color: 'var(--text-danger, #b91c1c)',
+            borderRadius: 6,
+          }}
+        >
+          规则加载失败：{rulesError}
+        </div>
+      )}
 
       <Tabs
         tabs={[
@@ -1408,28 +1425,10 @@ function ApiSecurityPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [siteId])
 
-  const addEndpoint = async () => {
-    if (!siteId) return
-    const method = window.prompt('方法 (GET/POST/PUT/DELETE/PATCH)：', 'POST') || ''
-    if (!method) return
-    const path = window.prompt('路径（如 /api/v1/login）：', '') || ''
-    if (!path) return
-    const auth = window.prompt('认证类型 (None/JWT/JWT+MFA/OAuth/APIKey)：', 'JWT') || 'JWT'
-    const rate = window.prompt('速率限制（如 100/s 或留空）：', '') || ''
-    try {
-      await policyApi.createAPIEndpoint(siteId, {
-        method: method.toUpperCase().trim(),
-        path: path.trim(),
-        auth_type: auth.trim(),
-        rate_limit: rate.trim(),
-        schema_status: 'pending',
-        status: 'ok',
-      })
-      await refresh()
-    } catch (e: unknown) {
-      window.alert(`登记失败：${e instanceof Error ? e.message : String(e)}`)
-    }
-  }
+  const [showAddEndpoint, setShowAddEndpoint] = useState(false)
+
+  // 之前用 4 个连串 window.prompt() —— Firefox/Safari 第二次会弹『阻止此页面继续显示对话框』，
+  // iframe 中直接被屏蔽返回 null，且无字段校验。改成 Modal 表单。
 
   const removeEndpoint = async (e: policyApi.APIEndpoint) => {
     if (!window.confirm(`确认删除 ${e.method} ${e.path}？`)) return
@@ -1489,7 +1488,7 @@ function ApiSecurityPanel() {
         ico="flow"
         meta={loading ? '加载中…' : `${endpoints.length} 个端点`}
         actions={
-          <Button variant="line" size="sm" onClick={addEndpoint}>
+          <Button variant="line" size="sm" onClick={() => setShowAddEndpoint(true)}>
             <Icon name="plus" size={11} className="ico" />
             登记端点
           </Button>
@@ -1560,6 +1559,170 @@ function ApiSecurityPanel() {
           </table>
         )}
       </Card>
+
+      {showAddEndpoint && siteId && (
+        <AddEndpointModal
+          siteId={siteId}
+          onCancel={() => setShowAddEndpoint(false)}
+          onSubmit={async payload => {
+            await policyApi.createAPIEndpoint(siteId, payload)
+            setShowAddEndpoint(false)
+            await refresh()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// API 端点登记弹窗 —— 替代之前 4 串 window.prompt（Firefox 第二次会被屏蔽）
+function AddEndpointModal(props: {
+  siteId: string | number
+  onCancel: () => void
+  onSubmit: (
+    payload: Partial<policyApi.APIEndpoint> & { method: string; path: string },
+  ) => Promise<void>
+}) {
+  const [method, setMethod] = useState<string>('POST')
+  const [path, setPath] = useState<string>('')
+  const [authType, setAuthType] = useState<string>('JWT')
+  const [rateLimit, setRateLimit] = useState<string>('')
+  const [description, setDescription] = useState<string>('')
+  const [submitting, setSubmitting] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const onConfirm = async () => {
+    if (!path.trim()) {
+      setErr('路径必填')
+      return
+    }
+    if (!path.trim().startsWith('/')) {
+      setErr('路径必须以 / 开头')
+      return
+    }
+    setSubmitting(true)
+    setErr(null)
+    try {
+      await props.onSubmit({
+        method: method.toUpperCase().trim(),
+        path: path.trim(),
+        auth_type: authType.trim() || 'JWT',
+        rate_limit: rateLimit.trim(),
+        description: description.trim(),
+        schema_status: 'pending',
+        status: 'ok',
+      })
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div
+      onClick={props.onCancel}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(13,10,24,.62)',
+        backdropFilter: 'blur(4px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        style={{
+          width: 480,
+          maxWidth: 'calc(100vw - 32px)',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--line-strong)',
+          borderRadius: 12,
+          padding: 24,
+        }}
+      >
+        <div className="fw-700 text-0 fs-16 mb-3">登记 API 端点</div>
+        <div className="row r-1-1 gap-3 mb-3">
+          <div className="field">
+            <label>方法 *</label>
+            <select className="select" value={method} onChange={e => setMethod(e.target.value)}>
+              <option>GET</option>
+              <option>POST</option>
+              <option>PUT</option>
+              <option>DELETE</option>
+              <option>PATCH</option>
+              <option>OPTIONS</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>认证</label>
+            <select
+              className="select"
+              value={authType}
+              onChange={e => setAuthType(e.target.value)}
+            >
+              <option>None</option>
+              <option>JWT</option>
+              <option>JWT+MFA</option>
+              <option>OAuth</option>
+              <option>APIKey</option>
+            </select>
+          </div>
+        </div>
+        <div className="field mb-3">
+          <label>路径 *</label>
+          <input
+            className="input"
+            placeholder="/api/v1/login"
+            value={path}
+            onChange={e => setPath(e.target.value)}
+            autoFocus
+          />
+        </div>
+        <div className="field mb-3">
+          <label>速率限制（可选）</label>
+          <input
+            className="input"
+            placeholder="如 100/s 或 5/min/IP"
+            value={rateLimit}
+            onChange={e => setRateLimit(e.target.value)}
+          />
+        </div>
+        <div className="field mb-3">
+          <label>备注</label>
+          <textarea
+            className="input"
+            rows={2}
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            style={{ resize: 'vertical' }}
+          />
+        </div>
+        {err && (
+          <div
+            className="fs-12 mb-3"
+            style={{
+              padding: '8px 12px',
+              background: 'var(--bg-danger-1, #fee2e2)',
+              color: 'var(--text-danger, #b91c1c)',
+              borderRadius: 6,
+            }}
+          >
+            {err}
+          </div>
+        )}
+        <div className="flex gap-2" style={{ justifyContent: 'flex-end' }}>
+          <Button variant="ghost" onClick={props.onCancel}>
+            取消
+          </Button>
+          <Button variant="pri" onClick={onConfirm} disabled={submitting}>
+            {submitting ? '登记中…' : '登记端点'}
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }
