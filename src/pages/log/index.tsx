@@ -31,25 +31,75 @@ const EMPTY_EVENT: AttackEvent = {
 export default function LogsPage() {
   const [allEvents, setAllEvents] = useState<AttackEvent[]>([])
   const [ipFilter, setIpFilter] = useState<string | null>(null)
-  const events = useMemo(
-    () => (ipFilter ? allEvents.filter(e => e.ip === ipFilter) : allEvents),
-    [allEvents, ipFilter],
-  )
   const [selected, setSelected] = useState<AttackEvent>(EMPTY_EVENT)
   const [tab, setTab] = useState<FilterTab>('all')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  // 查询条件（受控）
+  const [filter, setFilter] = useState({
+    timeRange: '1h',           // 1h / 24h / 7d / custom
+    site: '',
+    attackType: '',
+    risk: '',
+    action: '',                // blocked / challenged / logged
+    srcIP: '',
+  })
+
+  const fetchLogs = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const { items } = await logApi.listAttackLogs({
+        pageSize: 200,
+        site: filter.site || undefined,
+        risk: filter.risk || undefined,
+        srcIP: filter.srcIP || undefined,
+      })
+      // tab + 处置 + attackType 在前端二次过滤（后端不一定全支持）
+      let filtered = items
+      if (filter.action) {
+        filtered = filtered.filter(e => e.action === filter.action)
+      }
+      if (filter.attackType) {
+        const kw = filter.attackType.toLowerCase()
+        filtered = filtered.filter(
+          e => e.type.toLowerCase() === kw || e.typeLabel.toLowerCase().includes(kw),
+        )
+      }
+      setAllEvents(filtered)
+      if (filtered.length > 0) setSelected(prev => (prev.id ? prev : filtered[0]))
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    logApi
-      .listAttackLogs({ pageSize: 100 })
-      .then(({ items }) => {
-        setAllEvents(items)
-        if (items.length > 0) setSelected(prev => (prev.id ? prev : items[0]))
-      })
-      .catch(err => {
-        // eslint-disable-next-line no-console
-        console.error('[log api]', err)
-      })
+    fetchLogs()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // tab 切换在本地过滤已加载的数据（避免每次切都查后端）
+  const tabFiltered = useMemo(() => {
+    if (tab === 'all') return allEvents
+    if (tab === 'block') return allEvents.filter(e => e.action === 'blocked')
+    if (tab === 'chal') return allEvents.filter(e => e.action === 'challenged')
+    return allEvents.filter(e => e.action === 'logged')
+  }, [allEvents, tab])
+
+  const events = useMemo(
+    () => (ipFilter ? tabFiltered.filter(e => e.ip === ipFilter) : tabFiltered),
+    [tabFiltered, ipFilter],
+  )
+
+  const resetAll = () => {
+    setIpFilter(null)
+    setFilter({ timeRange: '1h', site: '', attackType: '', risk: '', action: '', srcIP: '' })
+    setTab('all')
+    fetchLogs()
+  }
 
   return (
     <>
@@ -62,11 +112,40 @@ export default function LogsPage() {
           <p>原始请求 · 命中规则 · Payload 解码 · 关联事件分析</p>
         </div>
         <div className="actions">
-          <Button variant="ghost">
-            <Icon name="filter" size={13} className="ico" />
-            高级筛选
+          <Button variant="ghost" onClick={fetchLogs} disabled={loading}>
+            <Icon name="refresh" size={13} className="ico" />
+            刷新
           </Button>
-          <Button variant="ghost">
+          <Button
+            variant="ghost"
+            onClick={() => {
+              // 前端组装 CSV，导出当前过滤后的列表（事件量小，无需后端 export）
+              const header = ['时间', 'IP', '国家', '站点', '类型', '方法', 'URI', '规则 ID', '处置']
+              const rows = events.map(e => [
+                e.t,
+                e.ip,
+                e.country,
+                e.site,
+                e.type,
+                e.method,
+                e.uri.replace(/"/g, '""'),
+                e.ruleId,
+                e.action,
+              ])
+              const csv = [header, ...rows]
+                .map(r => r.map(c => `"${String(c)}"`).join(','))
+                .join('\n')
+              const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = `attack_logs_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`
+              document.body.appendChild(a)
+              a.click()
+              a.remove()
+              URL.revokeObjectURL(url)
+            }}
+          >
             <Icon name="download" size={13} className="ico" />
             导出 CSV
           </Button>
@@ -77,52 +156,99 @@ export default function LogsPage() {
         <div className="frow">
           <div className="field">
             <label>时间范围</label>
-            <select className="select">
-              <option>近 1 小时</option>
-              <option>近 24 小时</option>
-              <option>近 7 天</option>
-              <option>自定义</option>
+            <select
+              className="select"
+              value={filter.timeRange}
+              onChange={e => setFilter(f => ({ ...f, timeRange: e.target.value }))}
+            >
+              <option value="1h">近 1 小时</option>
+              <option value="24h">近 24 小时</option>
+              <option value="7d">近 7 天</option>
+              <option value="custom">自定义</option>
             </select>
           </div>
           <div className="field">
             <label>站点</label>
-            <select className="select">
-              <option>全部</option>
-            </select>
+            <input
+              className="input"
+              placeholder="站点名（留空=全部）"
+              value={filter.site}
+              onChange={e => setFilter(f => ({ ...f, site: e.target.value }))}
+            />
           </div>
           <div className="field">
             <label>攻击类型</label>
-            <select className="select">
-              <option>全部</option>
+            <select
+              className="select"
+              value={filter.attackType}
+              onChange={e => setFilter(f => ({ ...f, attackType: e.target.value }))}
+            >
+              <option value="">全部</option>
+              <option value="SQLi">SQLi</option>
+              <option value="XSS">XSS</option>
+              <option value="CMDi">CMDi</option>
+              <option value="LFI">LFI</option>
+              <option value="CC">CC</option>
+              <option value="BOT">BOT</option>
+              <option value="SCAN">SCAN</option>
             </select>
           </div>
           <div className="field">
             <label>风险等级</label>
-            <select className="select">
-              <option>全部</option>
+            <select
+              className="select"
+              value={filter.risk}
+              onChange={e => setFilter(f => ({ ...f, risk: e.target.value }))}
+            >
+              <option value="">全部</option>
+              <option value="高">高</option>
+              <option value="中">中</option>
+              <option value="低">低</option>
             </select>
           </div>
           <div className="field">
             <label>处置</label>
-            <select className="select">
-              <option>全部</option>
-              <option>拦截</option>
-              <option>挑战</option>
-              <option>放行</option>
+            <select
+              className="select"
+              value={filter.action}
+              onChange={e => setFilter(f => ({ ...f, action: e.target.value }))}
+            >
+              <option value="">全部</option>
+              <option value="blocked">拦截</option>
+              <option value="challenged">挑战</option>
+              <option value="logged">记录</option>
             </select>
           </div>
           <div className="field">
             <label>来源 IP / CIDR</label>
-            <input className="input" placeholder="如 1.2.3.4 / 24" />
+            <input
+              className="input"
+              placeholder="如 1.2.3.4 或 1.2.3.0/24"
+              value={filter.srcIP}
+              onChange={e => setFilter(f => ({ ...f, srcIP: e.target.value }))}
+            />
           </div>
-          <Button variant="pri">
+          <Button variant="pri" onClick={fetchLogs} disabled={loading}>
             <Icon name="search" size={13} className="ico" />
-            查询
+            {loading ? '查询中…' : '查询'}
           </Button>
-          <Button variant="ghost" onClick={() => setIpFilter(null)}>
+          <Button variant="ghost" onClick={resetAll}>
             {ipFilter ? '清除 IP 关联' : '重置'}
           </Button>
         </div>
+        {error && (
+          <div
+            className="fs-12 mt-3"
+            style={{
+              padding: '8px 12px',
+              background: 'var(--bg-danger-1, #fee2e2)',
+              color: 'var(--text-danger, #b91c1c)',
+              borderRadius: 6,
+            }}
+          >
+            查询失败：{error}
+          </div>
+        )}
       </Card>
 
       <div className="row r-2-1">
@@ -137,10 +263,22 @@ export default function LogsPage() {
           actions={
             <Tabs
               tabs={[
-                { value: 'all', label: '全部' },
-                { value: 'block', label: '拦截', count: 28 },
-                { value: 'chal', label: '挑战', count: 8 },
-                { value: 'log', label: '记录', count: 4 },
+                { value: 'all', label: '全部', count: allEvents.length },
+                {
+                  value: 'block',
+                  label: '拦截',
+                  count: allEvents.filter(e => e.action === 'blocked').length,
+                },
+                {
+                  value: 'chal',
+                  label: '挑战',
+                  count: allEvents.filter(e => e.action === 'challenged').length,
+                },
+                {
+                  value: 'log',
+                  label: '记录',
+                  count: allEvents.filter(e => e.action === 'logged').length,
+                },
               ]}
               value={tab}
               onChange={v => setTab(v as FilterTab)}

@@ -162,11 +162,11 @@ export default function PageDashboard() {
             <option value="7d">近 7 天</option>
             <option value="30d">近 30 天</option>
           </select>
-          <Button variant="ghost">
+          <Button variant="ghost" onClick={() => window.location.reload()}>
             <Icon name="refresh" size={13} className="ico" />
             刷新
           </Button>
-          <Button variant="pri">
+          <Button variant="pri" onClick={() => (window.location.href = '/report')}>
             <Icon name="download" size={13} className="ico" />
             导出报告
           </Button>

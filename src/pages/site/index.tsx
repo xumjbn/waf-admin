@@ -59,7 +59,11 @@ function SitesPage() {
             value={view}
             onChange={v => setView(v as ViewMode)}
           />
-          <Button variant="ghost">
+          <Button
+            variant="ghost"
+            onClick={() => setView('list')}
+            title="筛选需要切到列表视图后顶部搜索"
+          >
             <Icon name="filter" size={13} className="ico" />
             筛选
           </Button>
@@ -93,7 +97,24 @@ function SitesPage() {
                   <span className="dot" />
                   异常
                 </Tag>
-                <Button variant="ghost" size="sm">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    siteApi
+                      .listSites()
+                      .then(list => {
+                        setSites(list)
+                        if (list.length > 0)
+                          setSelected(prev => (prev.id ? prev : list[0]))
+                      })
+                      .catch(err => {
+                        // eslint-disable-next-line no-console
+                        console.error('[site refresh]', err)
+                      })
+                  }}
+                  title="刷新拓扑数据"
+                >
                   <Icon name="refresh" size={11} className="ico" />
                 </Button>
               </>
