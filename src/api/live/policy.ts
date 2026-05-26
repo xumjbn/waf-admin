@@ -168,6 +168,105 @@ export async function dryRunRule(p: DryRunPayload): Promise<DryRunResult> {
   return res.data
 }
 
+// ---------- Bot 挑战模式（NW · 04 Bot Tab，migration 000022） ----------
+
+export type ChallengeKind = 'js' | 'tls' | 'dev' | 'slider' | 'behave'
+
+export interface BotChallengeConfig {
+  site_id: number
+  challenge: ChallengeKind
+  enabled: boolean
+  config: Record<string, unknown>
+}
+
+export async function listBotChallenges(siteId: string | number): Promise<BotChallengeConfig[]> {
+  const res = await axios.get<{ data: BotChallengeConfig[] }>(
+    `/api/v1/policy/sites/${siteId}/bot-challenges`,
+    { headers: authHeader() },
+  )
+  return res.data.data ?? []
+}
+
+export async function updateBotChallenge(
+  siteId: string | number,
+  challenge: ChallengeKind,
+  patch: { enabled?: boolean; config?: Record<string, unknown> },
+): Promise<void> {
+  await axios.put(
+    `/api/v1/policy/sites/${siteId}/bot-challenges/${challenge}`,
+    patch,
+    { headers: authHeader() },
+  )
+}
+
+// ---------- API 端点（NW · 04 API Tab） ----------
+
+export interface APIEndpoint {
+  id: number
+  site_id: number
+  method: string
+  path: string
+  auth_type: string
+  rate_limit: string
+  schema_status: 'pending' | 'imported' | 'failed' | string
+  qps: number
+  status: 'ok' | 'warn' | 'down' | string
+  description: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface APIKPI {
+  registered: number
+  unauthorized_blocks_24h: number
+  jwt_replay_blocks_24h: number
+  sensitive_masked_24h: number
+}
+
+export async function listAPIEndpoints(siteId: string | number): Promise<APIEndpoint[]> {
+  const res = await axios.get<{ data: APIEndpoint[] }>(
+    `/api/v1/policy/sites/${siteId}/api-endpoints`,
+    { headers: authHeader() },
+  )
+  return res.data.data ?? []
+}
+
+export async function getAPIKPI(siteId: string | number): Promise<APIKPI> {
+  const res = await axios.get<APIKPI>(
+    `/api/v1/policy/sites/${siteId}/api-kpi`,
+    { headers: authHeader() },
+  )
+  return res.data
+}
+
+export async function createAPIEndpoint(
+  siteId: string | number,
+  payload: Partial<APIEndpoint> & { method: string; path: string },
+): Promise<APIEndpoint> {
+  const res = await axios.post<APIEndpoint>(
+    `/api/v1/policy/sites/${siteId}/api-endpoints`,
+    payload,
+    { headers: authHeader() },
+  )
+  return res.data
+}
+
+export async function updateAPIEndpoint(
+  id: number,
+  patch: Partial<APIEndpoint>,
+): Promise<APIEndpoint> {
+  const res = await axios.put<APIEndpoint>(
+    `/api/v1/policy/api-endpoints/${id}`,
+    patch,
+    { headers: authHeader() },
+  )
+  return res.data
+}
+
+export async function deleteAPIEndpoint(id: number): Promise<void> {
+  await axios.delete(`/api/v1/policy/api-endpoints/${id}`, { headers: authHeader() })
+}
+
 // 手动触发 builtin 规则同步（管理员添加新 .conf 后立即生效，不必重启 control）
 export interface SyncBuiltinResult {
   dir: string
