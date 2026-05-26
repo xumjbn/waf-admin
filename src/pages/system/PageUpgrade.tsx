@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Card, Icon, Tag, Button, Toggle, Tabs, cn } from '@/components/ui'
+import { Card, Icon, Tag, type TagKind, Button, Toggle, Tabs, cn } from '@/components/ui'
 import * as upgradeApi from '@/api/live/upgrade'
 
 type Stage = 'idle' | 'preflight' | 'running' | 'done'
@@ -7,8 +7,8 @@ type Stage = 'idle' | 'preflight' | 'running' | 'done'
 interface VersionEntry {
   v: string
   d: string
-  t: 'minor' | 'rc' | 'patch' | 'major'
-  k: 'pink' | 'def' | 'info' | 'warn'
+  t: 'minor' | 'rc' | 'patch' | 'major' | 'security'
+  k: TagKind
   cur: boolean
   latest: boolean
   c: string
@@ -96,27 +96,78 @@ const VERSIONS: VersionEntry[] = [
   },
 ]
 
+// 把后端 UpgradePackage 映射到 VersionTimeline 期望的 VersionEntry 形状
+function toVersionEntry(p: upgradeApi.UpgradePackage): VersionEntry {
+  const kindByType: Record<string, VersionEntry['k']> = {
+    major: 'warn',
+    minor: 'info',
+    patch: 'def',
+    security: 'pink',
+  }
+  return {
+    v: p.version,
+    d: (p.releasedAt || p.createdAt || '').slice(0, 10) || '—',
+    t: (['minor', 'rc', 'patch', 'major'].includes(p.type) ? p.type : 'patch') as VersionEntry['t'],
+    k: kindByType[p.type] ?? 'def',
+    cur: p.isCurrent,
+    latest: p.isLatest,
+    c: p.changesSummary || '—',
+    size: p.sizeLabel,
+    notes: p.notes || '',
+  }
+}
+
 export default function PageUpgrade() {
   const [stage, setStage] = useState<Stage>('idle')
   const [progress, setProgress] = useState(0)
   const [logLines, setLogLines] = useState<{ t: number; l: string; k: 'info' | 'ok' | 'warn' | 'err' }[]>([])
   const [autoUpdate, setAutoUpdate] = useState(false)
   const [packages, setPackages] = useState<upgradeApi.UpgradePackage[]>([])
+  const [checkResult, setCheckResult] = useState<upgradeApi.UpgradeCheckResult | null>(null)
+  const [notesModal, setNotesModal] = useState<upgradeApi.UpgradePackage | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
 
-  // 拉真实升级包列表；当前 UI 版本时间轴仍按 VERSIONS 设计稿渲染，
-  // 等设计稿调成『后端包列表』时切到 packages。
+  const refresh = async () => {
+    const [pkgsRes, checkRes] = await Promise.allSettled([
+      upgradeApi.listUpgrades(),
+      upgradeApi.checkUpgrade(),
+    ])
+    if (pkgsRes.status === 'fulfilled') setPackages(pkgsRes.value)
+    if (checkRes.status === 'fulfilled') setCheckResult(checkRes.value)
+  }
+
   useEffect(() => {
-    upgradeApi
-      .listUpgrades()
-      .then(setPackages)
-      .catch(err => {
-        // eslint-disable-next-line no-console
-        console.error('[upgrade api]', err)
-      })
+    refresh()
   }, [])
-  // eslint-disable-next-line no-console
-  if (packages.length > 0) console.debug('[upgrade] backend packages', packages)
+
+  // 真实版本来自后端；为空时回退到 VERSIONS 设计稿示例（让 UI 不空）
+  const versions: VersionEntry[] = useMemo(
+    () => (packages.length > 0 ? packages.map(toVersionEntry) : VERSIONS),
+    [packages],
+  )
+  const current = checkResult?.current ?? packages.find(p => p.isCurrent) ?? null
+  const latest = checkResult?.latest ?? packages.find(p => p.isLatest) ?? null
+
+  const onRollback = async (versionTag: string) => {
+    const pkg = packages.find(p => p.version === versionTag)
+    if (!pkg) {
+      window.alert('该版本未在后端登记，无法直接回滚。请到运维侧手动处理。')
+      return
+    }
+    if (
+      !window.confirm(
+        `⚠️ 回滚到 ${pkg.version}？\n\n会标记此版本为当前运行版本（is_current=true）。\n仅做版本标记，实际镜像切换由 control 部署管道执行。`,
+      )
+    )
+      return
+    try {
+      await upgradeApi.applyUpgrade(pkg.id)
+      window.alert(`已标记 ${pkg.version} 为当前版本`)
+      await refresh()
+    } catch (e: unknown) {
+      window.alert(`回滚失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
 
   useEffect(() => {
     if (stage !== 'running') return
@@ -168,8 +219,14 @@ export default function PageUpgrade() {
   return (
     <div style={{ paddingTop: 12 }}>
       <div className="row r-1-2 mb-4">
-        <CurrentVersionCard />
-        <UpdateBanner stage={stage} onStart={() => setStage('preflight')} />
+        <CurrentVersionCard current={current} />
+        <UpdateBanner
+          stage={stage}
+          latest={latest}
+          available={!!checkResult?.upgradeAvailable}
+          onStart={() => setStage('preflight')}
+          onShowNotes={() => latest && setNotesModal(latest)}
+        />
       </div>
 
       {(stage === 'preflight' || stage === 'running' || stage === 'done') && (
@@ -187,7 +244,7 @@ export default function PageUpgrade() {
       <Card
         title="版本历史"
         ico="logs"
-        meta="可一键回滚至任一已发布版本"
+        meta={`${versions.length} 个版本 · 可一键回滚`}
         actions={
           <Tabs
             tabs={[
@@ -200,8 +257,19 @@ export default function PageUpgrade() {
           />
         }
       >
-        <VersionTimeline />
+        <VersionTimeline
+          versions={versions}
+          onRollback={onRollback}
+          onShowNotes={tag => {
+            const pkg = packages.find(p => p.version === tag)
+            if (pkg) setNotesModal(pkg)
+          }}
+        />
       </Card>
+
+      {notesModal && (
+        <NotesModal pkg={notesModal} onClose={() => setNotesModal(null)} />
+      )}
 
       <div className="row r-1-1 mt-4">
         <Card title="自动更新策略" ico="refresh" meta="安全补丁自动跟进">
@@ -215,7 +283,12 @@ export default function PageUpgrade() {
   )
 }
 
-function CurrentVersionCard() {
+function CurrentVersionCard({ current }: { current: upgradeApi.UpgradePackage | null }) {
+  // 当前版本：从 checkUpgrade 真接，缺失时显示『未知』占位
+  const ver = current?.version || '未知'
+  const date = current?.releasedAt?.slice(0, 10) || current?.appliedAt?.slice(0, 10) || '—'
+  const channel = current?.channel || 'stable'
+  const size = current?.sizeLabel || '—'
   return (
     <div
       className="card bracketed"
@@ -247,21 +320,21 @@ function CurrentVersionCard() {
                 当前版本
               </div>
               <div className="fw-700 text-0 fs-20 mono" style={{ marginTop: 2 }}>
-                v3.0.0-rc.2
+                {ver}
               </div>
             </div>
           </div>
-          <Tag kind="ok" lg>
+          <Tag kind={current ? 'ok' : 'def'} lg>
             <span className="dot" />
-            运行中
+            {current ? '运行中' : '未识别'}
           </Tag>
         </div>
 
         <div className="row r-1-1 gap-3 mt-3">
-          <KV2 label="发布于" value="2026-05-15" mono />
-          <KV2 label="构建号" value="#bd-58219" mono />
-          <KV2 label="运行时长" value="2 天 18:42" mono />
-          <KV2 label="发行通道" value={<Tag kind="pink">候选版</Tag>} />
+          <KV2 label="发布于" value={date} mono />
+          <KV2 label="安装包" value={current?.fileName || '—'} mono />
+          <KV2 label="大小" value={size} mono />
+          <KV2 label="发行通道" value={<Tag kind={channel === 'stable' ? 'ok' : 'pink'}>{channel}</Tag>} />
         </div>
 
         <div className="divider-h" />
@@ -289,14 +362,32 @@ function KV2({ label, value, mono }: { label: string; value: React.ReactNode; mo
   )
 }
 
-function UpdateBanner({ stage, onStart }: { stage: Stage; onStart: () => void }) {
+function UpdateBanner({
+  stage,
+  latest,
+  available,
+  onStart,
+  onShowNotes,
+}: {
+  stage: Stage
+  latest: upgradeApi.UpgradePackage | null
+  available: boolean
+  onStart: () => void
+  onShowNotes: () => void
+}) {
+  // 没有可用升级时显示『已是最新』；有则显示 latest 真实版本号 + 元信息
+  const ver = latest?.version
+  const releasedAt = latest?.releasedAt?.slice(0, 10) || '—'
+  const channel = latest?.channel || 'stable'
+  const changes = latest?.changesSummary || latest?.notes || ''
   return (
     <div
       className="card"
       style={{
-        background:
-          'linear-gradient(135deg, rgba(245,158,11,.08), rgba(168,85,247,.06) 60%, var(--bg-1))',
-        borderColor: 'rgba(245,158,11,.3)',
+        background: available
+          ? 'linear-gradient(135deg, rgba(245,158,11,.08), rgba(168,85,247,.06) 60%, var(--bg-1))'
+          : 'linear-gradient(135deg, rgba(16,185,129,.06), rgba(168,85,247,.04) 60%, var(--bg-1))',
+        borderColor: available ? 'rgba(245,158,11,.3)' : 'rgba(16,185,129,.3)',
         position: 'relative',
         overflow: 'hidden',
       }}
@@ -309,35 +400,42 @@ function UpdateBanner({ stage, onStart }: { stage: Stage; onStart: () => void })
                 width: 38,
                 height: 38,
                 borderRadius: 10,
-                background: 'rgba(245,158,11,.15)',
+                background: available ? 'rgba(245,158,11,.15)' : 'rgba(16,185,129,.15)',
                 display: 'grid',
                 placeItems: 'center',
-                color: 'var(--warn)',
+                color: available ? 'var(--warn)' : 'var(--ok)',
               }}
             >
-              <Icon name="arrow-up" size={18} />
+              <Icon name={available ? 'arrow-up' : 'check'} size={18} />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="fw-700 text-0 fs-15">v3.1.0 可升级</span>
-                <Tag kind="warn">稳定版</Tag>
-                <Tag kind="info">推荐</Tag>
+                <span className="fw-700 text-0 fs-15">
+                  {available ? `${ver} 可升级` : '已是最新'}
+                </span>
+                {available && (
+                  <>
+                    <Tag kind={channel === 'stable' ? 'warn' : 'info'}>{channel}</Tag>
+                    {latest?.type === 'security' && <Tag kind="danger">安全</Tag>}
+                  </>
+                )}
               </div>
               <div className="muted fs-12 mt-2">
-                发布于 2026-05-17 · 距今 1 天 ·
-                <span className="t-brand fw-600 mono" style={{ marginLeft: 6 }}>
-                  +18 项变更
-                </span>
+                {available
+                  ? `发布于 ${releasedAt} · ${changes || '查看更新日志了解详情'}`
+                  : '所有节点均运行最新稳定版本'}
               </div>
             </div>
           </div>
 
           <div className="flex gap-2">
-            <Button variant="ghost">
-              <Icon name="logs" size={13} className="ico" />
-              查看更新日志
-            </Button>
-            {stage === 'idle' && (
+            {latest && (
+              <Button variant="ghost" onClick={onShowNotes}>
+                <Icon name="logs" size={13} className="ico" />
+                查看更新日志
+              </Button>
+            )}
+            {stage === 'idle' && available && (
               <Button variant="pri" onClick={onStart}>
                 <Icon name="arrow-up" size={13} className="ico" />
                 立即升级
@@ -784,7 +882,15 @@ function UpgradeExecution({
   )
 }
 
-function VersionTimeline() {
+function VersionTimeline({
+  versions,
+  onRollback,
+  onShowNotes,
+}: {
+  versions: VersionEntry[]
+  onRollback: (versionTag: string) => void
+  onShowNotes: (versionTag: string) => void
+}) {
   return (
     <div style={{ position: 'relative', paddingLeft: 30 }}>
       <div
@@ -799,13 +905,13 @@ function VersionTimeline() {
           borderRadius: 1,
         }}
       />
-      {VERSIONS.map((v, i) => (
+      {versions.map((v, i) => (
         <div
           key={v.v}
           style={{
             position: 'relative',
             padding: '12px 0',
-            borderBottom: i < VERSIONS.length - 1 ? '1px solid var(--line-2)' : 'none',
+            borderBottom: i < versions.length - 1 ? '1px solid var(--line-2)' : 'none',
           }}
         >
           <div
@@ -865,13 +971,13 @@ function VersionTimeline() {
               <span className="mono fs-11 muted">{v.size}</span>
               <span className="mono fs-12 muted">{v.d}</span>
               {!v.cur && !v.latest && (
-                <Button variant="ghost" size="sm">
+                <Button variant="ghost" size="sm" onClick={() => onRollback(v.v)}>
                   <Icon name="refresh" size={11} className="ico" />
                   回滚至此版本
                 </Button>
               )}
               {v.latest && (
-                <Button variant="line" size="sm">
+                <Button variant="line" size="sm" onClick={() => onShowNotes(v.v)}>
                   <Icon name="logs" size={11} className="ico" />
                   更新日志
                 </Button>
@@ -1054,5 +1160,101 @@ function DayRow({ dayLabel, row }: { dayLabel: string; row: number[] }) {
         />
       ))}
     </>
+  )
+}
+
+function NotesModal({
+  pkg,
+  onClose,
+}: {
+  pkg: upgradeApi.UpgradePackage
+  onClose: () => void
+}) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(13,10,24,.62)',
+        backdropFilter: 'blur(4px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        style={{
+          width: 600,
+          maxWidth: 'calc(100vw - 32px)',
+          maxHeight: 'calc(100vh - 64px)',
+          overflow: 'auto',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--line-strong)',
+          borderRadius: 12,
+          padding: 24,
+        }}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="fw-700 text-0 fs-16 mono">{pkg.version}</div>
+            <div className="muted fs-12 mt-1">
+              {(pkg.releasedAt || pkg.createdAt).slice(0, 10)} · {pkg.type} · {pkg.channel} ·{' '}
+              {pkg.sizeLabel}
+            </div>
+          </div>
+          <Button variant="ghost" onClick={onClose}>
+            <Icon name="x" size={13} className="ico" />
+            关闭
+          </Button>
+        </div>
+
+        {pkg.changesSummary && (
+          <div className="muted fs-12 mb-3">
+            <span className="t-brand fw-600">变更摘要：</span>
+            {pkg.changesSummary}
+          </div>
+        )}
+
+        <div
+          className="mono fs-12"
+          style={{
+            padding: 14,
+            background: 'var(--bg-2)',
+            borderRadius: 8,
+            border: '1px solid var(--line)',
+            whiteSpace: 'pre-wrap',
+            lineHeight: 1.7,
+            maxHeight: 300,
+            overflowY: 'auto',
+          }}
+        >
+          {pkg.notes || '（无更新日志）'}
+        </div>
+
+        {pkg.checksum && (
+          <div className="muted fs-11 mt-3 mono">
+            SHA256: {pkg.checksum}
+          </div>
+        )}
+        {pkg.downloadUrl && (
+          <div className="mt-3">
+            <a
+              href={pkg.downloadUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="tbl-link"
+              style={{ fontSize: 12 }}
+            >
+              <Icon name="download" size={11} className="ico" />
+              直接下载安装包
+            </a>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
