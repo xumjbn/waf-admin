@@ -238,11 +238,39 @@ export default function RuleEdit() {
             <Icon name="x" size={13} className="ico" />
             取消
           </Button>
-          <Button variant="line">
+          <Button variant="line" onClick={runTest}>
             <Icon name="play" size={13} className="ico" />
             试运行
           </Button>
-          <Button variant="line">
+          <Button
+            variant="line"
+            onClick={async () => {
+              if (!rule.name.trim()) {
+                window.alert('请先填入规则名再另存为副本')
+                return
+              }
+              try {
+                const { field, match } = buildMatch()
+                const backendAction: 'block' | 'log' | 'allow' | 'rate' | 'challenge' =
+                  rule.action === 'redirect' ? 'block' : rule.action
+                await policyApi.createRule({
+                  name: `${rule.name.trim()} - 副本`,
+                  severity: rule.severity,
+                  action: backendAction,
+                  enabled: false, // 副本默认禁用，避免立刻生效
+                  scope: rule.scope,
+                  field,
+                  match,
+                  priority: rule.priority,
+                  builtin: false,
+                })
+                window.alert('已创建副本，副本默认禁用。回到规则列表后启用即可。')
+                navigate('/policy')
+              } catch (e: unknown) {
+                window.alert(`另存为副本失败：${e instanceof Error ? e.message : String(e)}`)
+              }
+            }}
+          >
             <Icon name="logs" size={13} className="ico" />
             另存为副本
           </Button>

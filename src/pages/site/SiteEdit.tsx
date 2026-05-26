@@ -11,6 +11,7 @@ import {
 } from '@/components/ui'
 import { SITES, CLUSTERS, RULES, type Site } from '@/mocks/nebula'
 import { hexA } from '@/components/charts/canvasUtils'
+import * as siteApi from '@/api/live/site'
 
 interface EditData {
   name: string
@@ -145,6 +146,76 @@ export default function SiteEdit() {
     )
   }, [data, initial])
 
+  const [saving, setSaving] = useState(false)
+  const [saveErr, setSaveErr] = useState<string | null>(null)
+
+  // 提交：把 EditData 的核心字段映射到后端 site model，其余 UI 元字段
+  // （aliases/level/mode/modules/notify*/aclAllow 等）打包进 description JSON，
+  // 与 SiteWizard 创建时的存法保持一致。
+  const onSave = async () => {
+    setSaving(true)
+    setSaveErr(null)
+    try {
+      const sslEnabled = data.proto === 'https' || data.proto === 'both'
+      const port = Number(data.port) || (sslEnabled ? 443 : 80)
+      const upstream = {
+        servers: data.origins
+          .filter(o => o.host.trim())
+          .map(o => ({
+            host: o.host.trim(),
+            port: Number(o.port) || 80,
+            weight: Number(o.weight) || 100,
+            proto: o.proto,
+          })),
+        health: {
+          path: data.healthPath,
+          interval_sec: data.healthInterval,
+          fail_threshold: data.healthFails,
+        },
+        host_rewrite: data.hostRewrite,
+      }
+      const meta = {
+        project: data.project,
+        aliases: data.aliases
+          .split(',')
+          .map(s => s.trim())
+          .filter(Boolean),
+        min_tls: data.minTls,
+        cert_type: data.certType,
+        cert_san: data.certSan,
+        cluster: data.cluster,
+        level: data.level,
+        mode: data.mode,
+        modules: Object.keys(data.modules).filter(k => data.modules[k]),
+        acl_allow: data.aclAllow,
+        acl_deny: data.aclDeny,
+        log_retention: data.logRetention,
+        notify: {
+          email: data.notifyEmail,
+          ding: data.notifyDing,
+          sms: data.notifySms,
+        },
+        http_redirect: data.httpRedirect,
+        http2: data.http2,
+      }
+      await siteApi.updateSite(site.id, {
+        name: data.name.trim(),
+        domain: data.domain.trim(),
+        listen_port: port,
+        ssl_enabled: sslEnabled,
+        upstream,
+        waf_enabled: data.mode !== 'observe',
+        description: JSON.stringify(meta),
+        status: data.paused ? 'paused' : 'active',
+      })
+    } catch (e: unknown) {
+      setSaveErr(e instanceof Error ? e.message : String(e))
+      throw e
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <>
       <div className="page-hd">
@@ -214,7 +285,13 @@ export default function SiteEdit() {
         </div>
       </div>
 
-      <SaveBar dirty={dirty} onDiscard={() => setData(initial)} />
+      <SaveBar
+        dirty={dirty}
+        saving={saving}
+        error={saveErr}
+        onDiscard={() => setData(initial)}
+        onSave={onSave}
+      />
     </>
   )
 }
@@ -1589,7 +1666,19 @@ function DangerRow({
   )
 }
 
-function SaveBar({ dirty, onDiscard }: { dirty: string[]; onDiscard: () => void }) {
+function SaveBar({
+  dirty,
+  saving,
+  error,
+  onDiscard,
+  onSave,
+}: {
+  dirty: string[]
+  saving: boolean
+  error: string | null
+  onDiscard: () => void
+  onSave: () => Promise<void>
+}) {
   if (dirty.length === 0) return null
   return (
     <div
@@ -1647,13 +1736,45 @@ function SaveBar({ dirty, onDiscard }: { dirty: string[]; onDiscard: () => void 
           {dirty.length > 4 && <span className="muted">+{dirty.length - 4} 更多</span>}
         </div>
       </div>
-      <Button variant="ghost" onClick={onDiscard}>
+      <Button variant="ghost" onClick={onDiscard} disabled={saving || dirty.length === 0}>
         丢弃变更
       </Button>
-      <Button variant="pri" onClick={() => alert(`已保存 (${dirty.length} 项变更)`)}>
+      <Button
+        variant="pri"
+        disabled={saving || dirty.length === 0}
+        onClick={async () => {
+          try {
+            await onSave()
+            window.alert(`已保存 ${dirty.length} 项变更`)
+          } catch {
+            /* error 已经在 onSave 内部 setSaveErr，下方红色条会显示 */
+          }
+        }}
+      >
         <Icon name="check" size={13} className="ico" />
-        保存并应用
+        {saving ? '保存中…' : '保存并应用'}
       </Button>
+      {error && (
+        <div
+          className="fs-11"
+          style={{
+            position: 'absolute',
+            top: -28,
+            right: 24,
+            padding: '4px 10px',
+            background: 'rgba(239,68,68,.92)',
+            color: '#fff',
+            borderRadius: 4,
+            maxWidth: 400,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          title={error}
+        >
+          保存失败：{error}
+        </div>
+      )}
     </div>
   )
 }
