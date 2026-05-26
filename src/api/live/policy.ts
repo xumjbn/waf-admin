@@ -138,6 +138,36 @@ export async function incrementHits(id: string | number, delta = 1): Promise<UiR
   return adapt(res.data)
 }
 
+// 规则试运行 —— 后端 dryrun.go，对 UI 输入的伪请求按 field/match 评估一遍。
+export interface DryRunPayload {
+  rule: {
+    id?: number
+    name?: string
+    field: string
+    match: string
+    action: string
+  }
+  request: {
+    method: string
+    url: string
+    headers: Record<string, string>
+    body: string
+  }
+}
+export interface DryRunResult {
+  matched: boolean
+  time_ms: number
+  hit_fields: string[]
+  action: string
+  reason?: string
+}
+export async function dryRunRule(p: DryRunPayload): Promise<DryRunResult> {
+  const res = await axios.post<DryRunResult>('/api/v1/policies/dry-run', p, {
+    headers: authHeader(),
+  })
+  return res.data
+}
+
 // 手动触发 builtin 规则同步（管理员添加新 .conf 后立即生效，不必重启 control）
 export interface SyncBuiltinResult {
   dir: string
