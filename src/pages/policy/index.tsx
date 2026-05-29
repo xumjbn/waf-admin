@@ -8,6 +8,7 @@ import * as siteApi from '@/api/live/site'
 import * as aclApi from '@/api/live/acl'
 import type { SiteModuleConfig } from '@/api/live/site'
 import type { AclRule } from '@/api/live/acl'
+import { useModalA11y } from '@/hooks/useModalA11y'
 import RuleEdit from './RuleEdit'
 
 type TabKey = 'modules' | 'rules' | 'acl' | 'bot' | 'api'
@@ -1119,6 +1120,8 @@ function AclCreateModal(props: {
   const [description, setDescription] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  useModalA11y({ open: true, onClose: props.onCancel, containerRef: panelRef })
 
   const onConfirm = async () => {
     if (!name.trim() || !srcIp.trim()) {
@@ -1154,9 +1157,11 @@ function AclCreateModal(props: {
       }}
     >
       <div
+        ref={panelRef}
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-labelledby="acl-create-title"
         style={{
           width: 460,
           maxWidth: 'calc(100vw - 32px)',
@@ -1167,7 +1172,7 @@ function AclCreateModal(props: {
         }}
       >
         <div className="mb-3">
-          <div className="fw-700 text-0 fs-16">
+          <div id="acl-create-title" className="fw-700 text-0 fs-16">
             {isAllow ? '添加 IP 白名单' : '添加 IP 黑名单'}
           </div>
           <div className="muted fs-12 mt-1">
@@ -1590,6 +1595,9 @@ function AddEndpointModal(props: {
   const [description, setDescription] = useState<string>('')
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // 焦点陷阱 + ESC 关闭，避免键盘可达性丢失。
+  const panelRef = useRef<HTMLDivElement>(null)
+  useModalA11y({ open: true, onClose: props.onCancel, containerRef: panelRef })
 
   const onConfirm = async () => {
     if (!path.trim()) {
@@ -1632,9 +1640,11 @@ function AddEndpointModal(props: {
       }}
     >
       <div
+        ref={panelRef}
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-labelledby="add-endpoint-title"
         style={{
           width: 480,
           maxWidth: 'calc(100vw - 32px)',
@@ -1644,7 +1654,7 @@ function AddEndpointModal(props: {
           padding: 24,
         }}
       >
-        <div className="fw-700 text-0 fs-16 mb-3">登记 API 端点</div>
+        <div id="add-endpoint-title" className="fw-700 text-0 fs-16 mb-3">登记 API 端点</div>
         <div className="row r-1-1 gap-3 mb-3">
           <div className="field">
             <label>方法 *</label>
