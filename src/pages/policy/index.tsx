@@ -8,6 +8,7 @@ import * as siteApi from '@/api/live/site'
 import * as aclApi from '@/api/live/acl'
 import type { SiteModuleConfig } from '@/api/live/site'
 import type { AclRule } from '@/api/live/acl'
+import { useModalA11y } from '@/hooks/useModalA11y'
 import RuleEdit from './RuleEdit'
 
 type TabKey = 'modules' | 'rules' | 'acl' | 'bot' | 'api'
@@ -16,16 +17,19 @@ function PolicyPage() {
   const nav = useNavigate()
   const [tab, setTab] = useState<TabKey>('rules')
   const [rules, setRules] = useState<Rule[]>([])
+  const [rulesError, setRulesError] = useState<string | null>(null)
   const dragSrcRef = useRef<string | null>(null)
   const [dragOver, setDragOver] = useState<string | null>(null)
 
   useEffect(() => {
     policyApi
       .listRules()
-      .then(setRules)
+      .then(rs => {
+        setRules(rs)
+        setRulesError(null)
+      })
       .catch(err => {
-        // eslint-disable-next-line no-console
-        console.error('[policy api]', err)
+        setRulesError(err instanceof Error ? err.message : String(err))
       })
   }, [])
 
@@ -80,6 +84,20 @@ function PolicyPage() {
           </Button>
         </div>
       </div>
+
+      {rulesError && (
+        <div
+          className="fs-12 mb-3"
+          style={{
+            padding: '8px 12px',
+            background: 'var(--bg-danger-1, #fee2e2)',
+            color: 'var(--text-danger, #b91c1c)',
+            borderRadius: 6,
+          }}
+        >
+          规则加载失败：{rulesError}
+        </div>
+      )}
 
       <Tabs
         tabs={[
@@ -1102,6 +1120,8 @@ function AclCreateModal(props: {
   const [description, setDescription] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  useModalA11y({ open: true, onClose: props.onCancel, containerRef: panelRef })
 
   const onConfirm = async () => {
     if (!name.trim() || !srcIp.trim()) {
@@ -1137,9 +1157,11 @@ function AclCreateModal(props: {
       }}
     >
       <div
+        ref={panelRef}
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-labelledby="acl-create-title"
         style={{
           width: 460,
           maxWidth: 'calc(100vw - 32px)',
@@ -1150,7 +1172,7 @@ function AclCreateModal(props: {
         }}
       >
         <div className="mb-3">
-          <div className="fw-700 text-0 fs-16">
+          <div id="acl-create-title" className="fw-700 text-0 fs-16">
             {isAllow ? '添加 IP 白名单' : '添加 IP 黑名单'}
           </div>
           <div className="muted fs-12 mt-1">
@@ -1237,131 +1259,480 @@ function AclCreateModal(props: {
 }
 
 function BotPanel() {
-  const [toggles, setToggles] = useState({ js: true, tls: true, dev: true, slider: false, behave: false })
+  // 5 种挑战模式由 bot_challenges 表持久化（migration 000022）。
+  // Bot 风险分布留装饰，需 metrics-history 落地后才能换真值。
+  const CHALLENGE_META: Array<{ k: policyApi.ChallengeKind; l: string; d: string }> = [
+    { k: 'js', l: 'JS Challenge', d: '透明 JS 计算挑战' },
+    { k: 'tls', l: 'TLS 指纹白名单', d: 'JA3 / JA4 指纹库' },
+    { k: 'dev', l: '设备指纹', d: 'Canvas + WebGL' },
+    { k: 'slider', l: '滑块验证码', d: '人机交互验证' },
+    { k: 'behave', l: '行为分析', d: '鼠标 / 输入韵律' },
+  ]
+
+  const [sites, setSites] = useState<Site[]>([])
+  const [siteId, setSiteId] = useState<string>('')
+  const [items, setItems] = useState<policyApi.BotChallengeConfig[]>([])
+  const [saving, setSaving] = useState<string | null>(null)
+
+  useEffect(() => {
+    siteApi
+      .listSites()
+      .then(list => {
+        setSites(list)
+        if (list.length > 0) setSiteId(prev => prev || list[0].id)
+      })
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.warn('[bot] sites', err)
+      })
+  }, [])
+
+  useEffect(() => {
+    if (!siteId) return
+    policyApi
+      .listBotChallenges(siteId)
+      .then(setItems)
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.warn('[bot] challenges', err)
+      })
+  }, [siteId])
+
+  const toggle = async (ch: policyApi.ChallengeKind, v: boolean) => {
+    if (!siteId) return
+    const prev = items
+    setItems(items.map(i => (i.challenge === ch ? { ...i, enabled: v } : i)))
+    setSaving(ch)
+    try {
+      await policyApi.updateBotChallenge(siteId, ch, { enabled: v })
+    } catch (err: unknown) {
+      window.alert(`切换失败：${err instanceof Error ? err.message : String(err)}`)
+      setItems(prev)
+    } finally {
+      setSaving(null)
+    }
+  }
+
   return (
-    <div className="row r-2-1 gap-3">
-      <Card title="Bot 风险分布" ico="crosshair" meta="近 24h">
-        <Donut
-          data={[
-            { label: '搜索引擎 (可信)', value: 38, color: '#10b981' },
-            { label: '商业 Bot', value: 18, color: '#22d3ee' },
-            { label: '未知 / 可疑', value: 22, color: '#f59e0b' },
-            { label: '恶意 Bot', value: 14, color: '#ef4444' },
-            { label: '伪装真人', value: 8, color: '#ec4899' },
-          ]}
-          size={180}
-          thickness={28}
-          centerValue="62.4K"
-          centerLabel="Bot 请求"
-        />
-      </Card>
-      <Card title="挑战模式" ico="sparkles">
-        <div className="stack" style={{ gap: 14 }}>
-          {[
-            { k: 'js', l: 'JS Challenge', d: '透明 JS 计算挑战' },
-            { k: 'tls', l: 'TLS 指纹白名单', d: 'JA3 / JA4 指纹库' },
-            { k: 'dev', l: '设备指纹', d: 'Canvas + WebGL' },
-            { k: 'slider', l: '滑块验证码', d: '人机交互验证' },
-            { k: 'behave', l: '行为分析', d: '鼠标 / 输入韵律' },
-          ].map(x => (
-            <div
-              key={x.k}
-              className="flex items-center gap-3"
-              style={{ padding: '8px 0', borderBottom: '1px solid var(--line-2)' }}
-            >
-              <div style={{ flex: 1 }}>
-                <div className="fw-600 text-0 fs-13">{x.l}</div>
-                <div className="muted fs-11">{x.d}</div>
-              </div>
-              <Toggle
-                on={(toggles as Record<string, boolean>)[x.k]}
-                onChange={v => setToggles(t => ({ ...t, [x.k]: v }))}
-              />
-            </div>
-          ))}
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <div className="muted fs-12">
+          应用范围：
+          <span className="text-0 fw-600">
+            {sites.find(s => s.id === siteId)?.name || '请选择站点'}
+          </span>
         </div>
-      </Card>
+        <select
+          className="select"
+          value={siteId}
+          onChange={e => setSiteId(e.target.value)}
+          style={{ minWidth: 220 }}
+        >
+          {sites.map(s => (
+            <option key={s.id} value={s.id}>
+              {s.name} · {s.domain}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="row r-2-1 gap-3">
+        <Card title="Bot 风险分布" ico="crosshair" meta="近 24h · 装饰示例">
+          <Donut
+            data={[
+              { label: '搜索引擎 (可信)', value: 38, color: '#10b981' },
+              { label: '商业 Bot', value: 18, color: '#22d3ee' },
+              { label: '未知 / 可疑', value: 22, color: '#f59e0b' },
+              { label: '恶意 Bot', value: 14, color: '#ef4444' },
+              { label: '伪装真人', value: 8, color: '#ec4899' },
+            ]}
+            size={180}
+            thickness={28}
+            centerValue="62.4K"
+            centerLabel="Bot 请求"
+          />
+          <div
+            className="muted fs-11 mt-2"
+            style={{
+              padding: 8,
+              background: 'var(--bg-2)',
+              borderRadius: 6,
+              lineHeight: 1.6,
+            }}
+          >
+            🛈 风险分类统计需 bot 识别管线（agent 上报）+ metrics-history 落地。
+            当前为装饰示例，挑战开关已接真后端。
+          </div>
+        </Card>
+        <Card title="挑战模式" ico="sparkles" meta={`${items.filter(i => i.enabled).length}/${items.length} 启用`}>
+          <div className="stack" style={{ gap: 14 }}>
+            {CHALLENGE_META.map(x => {
+              const cur = items.find(i => i.challenge === x.k)
+              return (
+                <div
+                  key={x.k}
+                  className="flex items-center gap-3"
+                  style={{
+                    padding: '8px 0',
+                    borderBottom: '1px solid var(--line-2)',
+                    opacity: saving === x.k ? 0.6 : 1,
+                  }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <div className="fw-600 text-0 fs-13">{x.l}</div>
+                    <div className="muted fs-11">{x.d}</div>
+                  </div>
+                  <Toggle on={cur?.enabled ?? false} onChange={v => toggle(x.k, v)} />
+                </div>
+              )
+            })}
+          </div>
+        </Card>
+      </div>
     </div>
   )
 }
 
 function ApiSecurityPanel() {
+  const [sites, setSites] = useState<Site[]>([])
+  const [siteId, setSiteId] = useState<string>('')
+  const [endpoints, setEndpoints] = useState<policyApi.APIEndpoint[]>([])
+  const [kpi, setKpi] = useState<policyApi.APIKPI | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    siteApi
+      .listSites()
+      .then(list => {
+        setSites(list)
+        if (list.length > 0) setSiteId(prev => prev || list[0].id)
+      })
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.warn('[api panel] sites', err)
+      })
+  }, [])
+
+  const refresh = async () => {
+    if (!siteId) return
+    setLoading(true)
+    const [eRes, kRes] = await Promise.allSettled([
+      policyApi.listAPIEndpoints(siteId),
+      policyApi.getAPIKPI(siteId),
+    ])
+    if (eRes.status === 'fulfilled') setEndpoints(eRes.value)
+    if (kRes.status === 'fulfilled') setKpi(kRes.value)
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [siteId])
+
+  const [showAddEndpoint, setShowAddEndpoint] = useState(false)
+
+  // 之前用 4 个连串 window.prompt() —— Firefox/Safari 第二次会弹『阻止此页面继续显示对话框』，
+  // iframe 中直接被屏蔽返回 null，且无字段校验。改成 Modal 表单。
+
+  const removeEndpoint = async (e: policyApi.APIEndpoint) => {
+    if (!window.confirm(`确认删除 ${e.method} ${e.path}？`)) return
+    try {
+      await policyApi.deleteAPIEndpoint(e.id)
+      await refresh()
+    } catch (err: unknown) {
+      window.alert(`删除失败：${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   return (
     <div className="stack">
+      <div className="flex items-center justify-between mb-3">
+        <div className="muted fs-12">
+          应用范围：
+          <span className="text-0 fw-600">
+            {sites.find(s => s.id === siteId)?.name || '请选择站点'}
+          </span>
+        </div>
+        <select
+          className="select"
+          value={siteId}
+          onChange={e => setSiteId(e.target.value)}
+          style={{ minWidth: 220 }}
+        >
+          {sites.map(s => (
+            <option key={s.id} value={s.id}>
+              {s.name} · {s.domain}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <div className="row r-4">
         <div className="card kpi brand" style={{ padding: 16 }}>
           <div className="kpi-lbl muted fs-12">已注册 API</div>
-          <div className="kpi-val fw-700 fs-20 mono">142</div>
+          <div className="kpi-val fw-700 fs-20 mono">{kpi?.registered ?? '—'}</div>
         </div>
         <div className="card kpi danger" style={{ padding: 16 }}>
           <div className="kpi-lbl muted fs-12">未授权访问拦截</div>
-          <div className="kpi-val fw-700 fs-20 mono">328</div>
+          <div className="kpi-val fw-700 fs-20 mono">
+            {kpi?.unauthorized_blocks_24h ?? 0}
+          </div>
         </div>
         <div className="card kpi warn" style={{ padding: 16 }}>
           <div className="kpi-lbl muted fs-12">JWT 重放阻断</div>
-          <div className="kpi-val fw-700 fs-20 mono">64</div>
+          <div className="kpi-val fw-700 fs-20 mono">{kpi?.jwt_replay_blocks_24h ?? 0}</div>
         </div>
         <div className="card kpi info" style={{ padding: 16 }}>
           <div className="kpi-lbl muted fs-12">敏感字段脱敏</div>
-          <div className="kpi-val fw-700 fs-20 mono">2,840</div>
+          <div className="kpi-val fw-700 fs-20 mono">{kpi?.sensitive_masked_24h ?? 0}</div>
         </div>
       </div>
       <Card
         title="API 端点列表"
         ico="flow"
-        meta="带 OpenAPI Schema 校验"
+        meta={loading ? '加载中…' : `${endpoints.length} 个端点`}
         actions={
-          <Button variant="line" size="sm">
+          <Button variant="line" size="sm" onClick={() => setShowAddEndpoint(true)}>
             <Icon name="plus" size={11} className="ico" />
-            导入 Swagger
+            登记端点
           </Button>
         }
       >
-        <table>
-          <thead>
-            <tr>
-              <th>方法</th>
-              <th>路径</th>
-              <th>认证</th>
-              <th>速率限制</th>
-              <th>Schema</th>
-              <th>QPS</th>
-              <th>状态</th>
-            </tr>
-          </thead>
-          <tbody>
-            {[
-              ['POST', '/api/v1/auth/login', 'None', '5/min/IP', '已导入', 124, 'ok'],
-              ['GET', '/api/v1/users/{id}', 'JWT', '100/s', '已导入', 1840, 'ok'],
-              ['POST', '/api/v1/orders', 'JWT', '50/s', '已导入', 920, 'ok'],
-              ['POST', '/api/v1/upload', 'JWT', '5/s', '已导入', 32, 'warn'],
-              ['GET', '/api/v1/admin/exports', 'JWT+MFA', '10/min', '已导入', 8, 'ok'],
-              ['GET', '/api/internal/metrics', '内网', '—', '未导入', 240, 'warn'],
-            ].map(r => (
-              <tr key={(r[0] as string) + (r[1] as string)}>
-                <td>
-                  <Tag kind={r[0] === 'GET' ? 'info' : r[0] === 'POST' ? 'pink' : 'warn'}>
-                    {r[0] as string}
-                  </Tag>
-                </td>
-                <td className="mono fs-12">{r[1] as string}</td>
-                <td>{r[2] as string}</td>
-                <td className="mono">{r[3] as string}</td>
-                <td>
-                  <Tag kind={r[4] === '已导入' ? 'ok' : 'def'}>{r[4] as string}</Tag>
-                </td>
-                <td className="mono">{r[5] as number}</td>
-                <td>
-                  <Tag kind={r[6] === 'ok' ? 'ok' : 'warn'}>
-                    <span className="dot" />
-                    {r[6] === 'ok' ? '健康' : '提醒'}
-                  </Tag>
-                </td>
+        {endpoints.length === 0 && !loading ? (
+          <div
+            className="muted fs-12"
+            style={{ padding: '24px 0', textAlign: 'center', lineHeight: 1.7 }}
+          >
+            暂无已登记的 API 端点。
+            <br />
+            点右上『登记端点』手工添加，或导入 Swagger（待落地）。
+          </div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>方法</th>
+                <th>路径</th>
+                <th>认证</th>
+                <th>速率限制</th>
+                <th>Schema</th>
+                <th>QPS</th>
+                <th>状态</th>
+                <th>操作</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {endpoints.map(e => (
+                <tr key={e.id}>
+                  <td>
+                    <Tag kind={e.method === 'GET' ? 'info' : e.method === 'POST' ? 'pink' : 'warn'}>
+                      {e.method}
+                    </Tag>
+                  </td>
+                  <td className="mono fs-12">{e.path}</td>
+                  <td>{e.auth_type}</td>
+                  <td className="mono">{e.rate_limit || '—'}</td>
+                  <td>
+                    <Tag kind={e.schema_status === 'imported' ? 'ok' : 'def'}>
+                      {e.schema_status === 'imported'
+                        ? '已导入'
+                        : e.schema_status === 'failed'
+                          ? '失败'
+                          : '待导入'}
+                    </Tag>
+                  </td>
+                  <td className="mono">{e.qps}</td>
+                  <td>
+                    <Tag kind={e.status === 'ok' ? 'ok' : e.status === 'warn' ? 'warn' : 'danger'}>
+                      <span className="dot" />
+                      {e.status === 'ok' ? '健康' : e.status === 'warn' ? '提醒' : '故障'}
+                    </Tag>
+                  </td>
+                  <td className="fs-12">
+                    <span
+                      className="tbl-link"
+                      style={{ cursor: 'pointer', color: 'var(--danger)' }}
+                      onClick={() => removeEndpoint(e)}
+                    >
+                      删除
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </Card>
+
+      {showAddEndpoint && siteId && (
+        <AddEndpointModal
+          siteId={siteId}
+          onCancel={() => setShowAddEndpoint(false)}
+          onSubmit={async payload => {
+            await policyApi.createAPIEndpoint(siteId, payload)
+            setShowAddEndpoint(false)
+            await refresh()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// API 端点登记弹窗 —— 替代之前 4 串 window.prompt（Firefox 第二次会被屏蔽）
+function AddEndpointModal(props: {
+  siteId: string | number
+  onCancel: () => void
+  onSubmit: (
+    payload: Partial<policyApi.APIEndpoint> & { method: string; path: string },
+  ) => Promise<void>
+}) {
+  const [method, setMethod] = useState<string>('POST')
+  const [path, setPath] = useState<string>('')
+  const [authType, setAuthType] = useState<string>('JWT')
+  const [rateLimit, setRateLimit] = useState<string>('')
+  const [description, setDescription] = useState<string>('')
+  const [submitting, setSubmitting] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  // 焦点陷阱 + ESC 关闭，避免键盘可达性丢失。
+  const panelRef = useRef<HTMLDivElement>(null)
+  useModalA11y({ open: true, onClose: props.onCancel, containerRef: panelRef })
+
+  const onConfirm = async () => {
+    if (!path.trim()) {
+      setErr('路径必填')
+      return
+    }
+    if (!path.trim().startsWith('/')) {
+      setErr('路径必须以 / 开头')
+      return
+    }
+    setSubmitting(true)
+    setErr(null)
+    try {
+      await props.onSubmit({
+        method: method.toUpperCase().trim(),
+        path: path.trim(),
+        auth_type: authType.trim() || 'JWT',
+        rate_limit: rateLimit.trim(),
+        description: description.trim(),
+        schema_status: 'pending',
+        status: 'ok',
+      })
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div
+      onClick={props.onCancel}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(13,10,24,.62)',
+        backdropFilter: 'blur(4px)',
+        display: 'grid',
+        placeItems: 'center',
+        zIndex: 1000,
+      }}
+    >
+      <div
+        ref={panelRef}
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-endpoint-title"
+        style={{
+          width: 480,
+          maxWidth: 'calc(100vw - 32px)',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--line-strong)',
+          borderRadius: 12,
+          padding: 24,
+        }}
+      >
+        <div id="add-endpoint-title" className="fw-700 text-0 fs-16 mb-3">登记 API 端点</div>
+        <div className="row r-1-1 gap-3 mb-3">
+          <div className="field">
+            <label>方法 *</label>
+            <select className="select" value={method} onChange={e => setMethod(e.target.value)}>
+              <option>GET</option>
+              <option>POST</option>
+              <option>PUT</option>
+              <option>DELETE</option>
+              <option>PATCH</option>
+              <option>OPTIONS</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>认证</label>
+            <select
+              className="select"
+              value={authType}
+              onChange={e => setAuthType(e.target.value)}
+            >
+              <option>None</option>
+              <option>JWT</option>
+              <option>JWT+MFA</option>
+              <option>OAuth</option>
+              <option>APIKey</option>
+            </select>
+          </div>
+        </div>
+        <div className="field mb-3">
+          <label>路径 *</label>
+          <input
+            className="input"
+            placeholder="/api/v1/login"
+            value={path}
+            onChange={e => setPath(e.target.value)}
+            autoFocus
+          />
+        </div>
+        <div className="field mb-3">
+          <label>速率限制（可选）</label>
+          <input
+            className="input"
+            placeholder="如 100/s 或 5/min/IP"
+            value={rateLimit}
+            onChange={e => setRateLimit(e.target.value)}
+          />
+        </div>
+        <div className="field mb-3">
+          <label>备注</label>
+          <textarea
+            className="input"
+            rows={2}
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            style={{ resize: 'vertical' }}
+          />
+        </div>
+        {err && (
+          <div
+            className="fs-12 mb-3"
+            style={{
+              padding: '8px 12px',
+              background: 'var(--bg-danger-1, #fee2e2)',
+              color: 'var(--text-danger, #b91c1c)',
+              borderRadius: 6,
+            }}
+          >
+            {err}
+          </div>
+        )}
+        <div className="flex gap-2" style={{ justifyContent: 'flex-end' }}>
+          <Button variant="ghost" onClick={props.onCancel}>
+            取消
+          </Button>
+          <Button variant="pri" onClick={onConfirm} disabled={submitting}>
+            {submitting ? '登记中…' : '登记端点'}
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }

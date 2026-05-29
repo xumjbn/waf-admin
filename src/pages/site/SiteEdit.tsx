@@ -137,14 +137,22 @@ export default function SiteEdit() {
   )
 
   const [data, setData] = useState<EditData>(initial)
+  // baseline 与 initial 分开 —— initial 只在 site 变时 useMemo 重算，baseline 在
+  // 每次保存成功后推进，让 dirty 比较以最新已保存值为准；否则 SaveBar 永远不消失。
+  const [baseline, setBaseline] = useState<EditData>(initial)
+  // 站点变化时（路由切换）重置 baseline
+  useEffect(() => {
+    setBaseline(initial)
+  }, [initial])
+
   const [section, setSection] = useState<SectionId>('basic')
   const set = (patch: Partial<EditData>) => setData(d => ({ ...d, ...patch }))
 
   const dirty = useMemo(() => {
-    return (Object.keys(initial) as (keyof EditData)[]).filter(
-      k => JSON.stringify(initial[k]) !== JSON.stringify(data[k]),
+    return (Object.keys(baseline) as (keyof EditData)[]).filter(
+      k => JSON.stringify(baseline[k]) !== JSON.stringify(data[k]),
     )
-  }, [data, initial])
+  }, [data, baseline])
 
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState<string | null>(null)
@@ -208,6 +216,9 @@ export default function SiteEdit() {
         description: JSON.stringify(meta),
         status: data.paused ? 'paused' : 'active',
       })
+      // 保存成功 → 把当前已提交内容当成新的 baseline，让 dirty 重置；之前没做这步
+      // 导致 SaveBar 永远显示『XX 项未保存』。
+      setBaseline(data)
     } catch (e: unknown) {
       setSaveErr(e instanceof Error ? e.message : String(e))
       throw e
@@ -289,7 +300,7 @@ export default function SiteEdit() {
         dirty={dirty}
         saving={saving}
         error={saveErr}
-        onDiscard={() => setData(initial)}
+        onDiscard={() => setData(baseline)}
         onSave={onSave}
       />
     </>

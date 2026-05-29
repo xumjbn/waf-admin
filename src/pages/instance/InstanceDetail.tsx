@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Card, Icon, KPI, Tag, Button, Tabs, Toggle, Bar } from '@/components/ui'
 import { AreaChart } from '@/components/charts'
@@ -163,16 +163,34 @@ export default function InstanceDetail() {
     setSp({ tab: v }, { replace: true })
   }
 
-  // 资源水位趋势图：当前后端没有时序 metrics endpoint，先用 sin/random 占位
-  // 让 UI 设计稿的图表区域不空。等 metrics-history 端点上线后切真数据。
-  const trendLabels = Array.from({ length: 24 }, (_, i) => `${i}:00`)
-  const trendQps = useMemo(
-    () =>
-      Array.from({ length: 24 }, (_, i) =>
-        Math.floor(800 + Math.sin(i / 3) * 300 + Math.random() * 200),
-      ),
-    [],
-  )
+  // 资源水位趋势：拉真 metrics-trend（heartbeats / monitor_metrics 聚合）。
+  // 后端没数据时返回 points: []，UI 显示空态。
+  const [trend, setTrend] = useState<{ labels: string[]; data: number[] } | null>(null)
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    instanceApi
+      .getMetricsTrend(id, { hours: 24, metric: 'requests_per_second' })
+      .then(t => {
+        if (cancelled) return
+        const labels = t.points.map(p => {
+          // 把 UTC RFC3339 截成 HH:mm（按本地时区）
+          const d = new Date(p.t)
+          return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+        })
+        setTrend({ labels, data: t.points.map(p => Math.round(p.v)) })
+      })
+      .catch(err => {
+        // eslint-disable-next-line no-console
+        console.warn('[instance trend]', err)
+        if (!cancelled) setTrend({ labels: [], data: [] })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [id])
+  const trendLabels = trend?.labels ?? []
+  const trendQps = trend?.data ?? []
 
   return (
     <>
@@ -222,12 +240,33 @@ export default function InstanceDetail() {
 
       {tab === 'detail' && (
         <div className="row r-1-1 gap-3">
-          <Card title="资源水位" ico="activity" meta="近 24h">
-            <AreaChart
-              height={160}
-              labels={trendLabels}
-              series={[{ label: 'QPS', data: trendQps, color: '#a855f7' }]}
-            />
+          <Card title="资源水位" ico="activity" meta={`近 24h · QPS · ${trendQps.length} 个采样点`}>
+            {trendQps.length === 0 ? (
+              <div
+                className="muted fs-12"
+                style={{
+                  height: 160,
+                  display: 'grid',
+                  placeItems: 'center',
+                  border: '1px dashed var(--line)',
+                  borderRadius: 8,
+                  textAlign: 'center',
+                  padding: 16,
+                }}
+              >
+                暂无 24 小时内的 QPS 采样数据
+                <br />
+                <span className="fs-11">
+                  数据来自 agent 心跳，每次 heartbeat 写一行；如果实例刚上线请稍等
+                </span>
+              </div>
+            ) : (
+              <AreaChart
+                height={160}
+                labels={trendLabels}
+                series={[{ label: 'QPS', data: trendQps, color: '#a855f7' }]}
+              />
+            )}
             <div className="stack mt-3">
               <div>
                 <div className="flex items-center justify-between mb-1">

@@ -1,9 +1,10 @@
 import { Card, Icon, KPI, Tag, Button, Toggle } from '@/components/ui'
 import type { Alert } from '@/mocks/nebula'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import * as alertApi from '@/api/live/alert'
 import type { Channel, ChannelKind } from '@/api/live/alert'
+import { useModalA11y } from '@/hooks/useModalA11y'
 import AlertPolicy from './AlertPolicy'
 
 const CHANNEL_META: Record<
@@ -359,6 +360,8 @@ function AddChannelModal(props: {
   const [severity, setSeverity] = useState<Channel['severity']>('warn')
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  useModalA11y({ open: true, onClose: props.onCancel, containerRef: panelRef })
 
   const meta = CHANNEL_META[kind] ?? CHANNEL_META.webhook
 
@@ -398,9 +401,11 @@ function AddChannelModal(props: {
       }}
     >
       <div
+        ref={panelRef}
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-labelledby="add-channel-title"
         style={{
           width: 480,
           maxWidth: 'calc(100vw - 32px)',
@@ -411,7 +416,7 @@ function AddChannelModal(props: {
         }}
       >
         <div className="mb-3">
-          <div className="fw-700 text-0 fs-16">添加告警渠道</div>
+          <div id="add-channel-title" className="fw-700 text-0 fs-16">添加告警渠道</div>
           <div className="muted fs-12 mt-1">命中策略后通过该渠道分发通知</div>
         </div>
 

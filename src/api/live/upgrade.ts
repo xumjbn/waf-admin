@@ -163,3 +163,78 @@ export async function applyUpgrade(id: number): Promise<void> {
 export async function deleteUpgrade(id: number): Promise<void> {
   await axios.delete(`/api/v1/system/upgrades/${id}`, { headers: authHeader() })
 }
+
+// --- 真升级流程 ---
+// POST /upgrades/{pkgId}/start  → 后端建 upgrade_tasks 行 + 起 worker，
+// 返回 task_id；前端轮询 GET /upgrade-tasks/{tid} 拉进度。
+
+export type UpgradeTaskStatus = 'queued' | 'running' | 'done' | 'failed'
+export type UpgradeLogKind = 'info' | 'ok' | 'warn' | 'err'
+
+export interface UpgradeLogLine {
+  t: number     // 自启动起的毫秒数（前端排序用）
+  l: string     // 日志正文
+  k: UpgradeLogKind
+}
+
+export interface UpgradeTask {
+  id: number
+  packageId: number
+  status: UpgradeTaskStatus
+  progress: number
+  log: UpgradeLogLine[]
+  errorMsg?: string
+  startedAt?: string | null
+  finishedAt?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+interface BackendUpgradeTask {
+  id: number
+  package_id: number
+  status: string
+  progress: number
+  log: { t: number; l: string; k: string }[] | null
+  error_msg?: string
+  started_at?: string | null
+  finished_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+function adaptTask(b: BackendUpgradeTask): UpgradeTask {
+  return {
+    id: b.id,
+    packageId: b.package_id,
+    status: (b.status as UpgradeTaskStatus) || 'queued',
+    progress: b.progress ?? 0,
+    log: (b.log ?? []).map(x => ({
+      t: x.t,
+      l: x.l,
+      k: (['info', 'ok', 'warn', 'err'].includes(x.k) ? x.k : 'info') as UpgradeLogKind,
+    })),
+    errorMsg: b.error_msg,
+    startedAt: b.started_at,
+    finishedAt: b.finished_at,
+    createdAt: b.created_at,
+    updatedAt: b.updated_at,
+  }
+}
+
+export async function startUpgradeTask(pkgId: number): Promise<UpgradeTask> {
+  const res = await axios.post<BackendUpgradeTask>(
+    `/api/v1/system/upgrades/${pkgId}/start`,
+    {},
+    { headers: authHeader() },
+  )
+  return adaptTask(res.data)
+}
+
+export async function getUpgradeTask(taskId: number): Promise<UpgradeTask> {
+  const res = await axios.get<BackendUpgradeTask>(
+    `/api/v1/system/upgrade-tasks/${taskId}`,
+    { headers: authHeader() },
+  )
+  return adaptTask(res.data)
+}

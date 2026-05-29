@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { Card, Icon, KPI, Tag, Bar, Button } from '@/components/ui'
 import type { Instance, Cluster } from '@/mocks/nebula'
 import * as instanceApi from '@/api/live/instance'
 import type { HAGroupRow, ClusterDetail } from '@/api/live/instance'
+import { useModalA11y } from '@/hooks/useModalA11y'
 import InstanceDetail from './InstanceDetail'
 
 function InstancesPage() {
@@ -659,6 +660,8 @@ function ClusterDetailModal(props: {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const panelRef = useRef<HTMLDivElement>(null)
+  useModalA11y({ open: true, onClose: props.onClose, containerRef: panelRef })
 
   // 编辑态
   const [name, setName] = useState('')
@@ -809,9 +812,11 @@ function ClusterDetailModal(props: {
       }}
     >
       <div
+        ref={panelRef}
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-label="集群详情"
         style={{
           width: 720,
           maxWidth: 'calc(100vw - 32px)',
@@ -1125,6 +1130,8 @@ function ModalShell(props: {
   onCancel: () => void
   children: ReactNode
 }) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  useModalA11y({ open: true, onClose: props.onCancel, containerRef: panelRef })
   return (
     <div
       onClick={props.onCancel}
@@ -1139,9 +1146,11 @@ function ModalShell(props: {
       }}
     >
       <div
+        ref={panelRef}
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-labelledby="modal-shell-title"
         style={{
           width: 480,
           maxWidth: 'calc(100vw - 32px)',
@@ -1153,7 +1162,7 @@ function ModalShell(props: {
         }}
       >
         <div className="mb-3">
-          <div className="fw-700 text-0 fs-16">{props.title}</div>
+          <div id="modal-shell-title" className="fw-700 text-0 fs-16">{props.title}</div>
           {props.subtitle && <div className="muted fs-12 mt-1">{props.subtitle}</div>}
         </div>
         {props.children}

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, Icon, Tag, type TagKind, Button, Toggle, Tabs, cn } from '@/components/ui'
 import * as upgradeApi from '@/api/live/upgrade'
+import { useModalA11y } from '@/hooks/useModalA11y'
 
 type Stage = 'idle' | 'preflight' | 'running' | 'done'
 
@@ -120,12 +121,16 @@ function toVersionEntry(p: upgradeApi.UpgradePackage): VersionEntry {
 export default function PageUpgrade() {
   const [stage, setStage] = useState<Stage>('idle')
   const [progress, setProgress] = useState(0)
-  const [logLines, setLogLines] = useState<{ t: number; l: string; k: 'info' | 'ok' | 'warn' | 'err' }[]>([])
+  const [logLines, setLogLines] = useState<upgradeApi.UpgradeLogLine[]>([])
   const [autoUpdate, setAutoUpdate] = useState(false)
   const [packages, setPackages] = useState<upgradeApi.UpgradePackage[]>([])
   const [checkResult, setCheckResult] = useState<upgradeApi.UpgradeCheckResult | null>(null)
   const [notesModal, setNotesModal] = useState<upgradeApi.UpgradePackage | null>(null)
+  const [taskId, setTaskId] = useState<number | null>(null)
+  const [taskError, setTaskError] = useState<string | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
+  // 轮询句柄：组件 unmount 或换包时清空，避免泄漏。
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const refresh = async () => {
     const [pkgsRes, checkRes] = await Promise.allSettled([
@@ -169,51 +174,75 @@ export default function PageUpgrade() {
     }
   }
 
+  // 真升级流程：调 startUpgradeTask 拿 task_id，然后每 500ms 轮询拉进度，
+  // 直到 status=done/failed 或组件卸载。假 setTimeout 流被完全替换。
   useEffect(() => {
-    if (stage !== 'running') return
-    const lines = [
-      { t: 0, l: '[INIT] 创建升级会话 nbu-3.1.0-20260518', k: 'info' as const },
-      { t: 600, l: '[1/8] 拉取镜像 nebulawaf:v3.1.0 (842 MB)…', k: 'info' as const },
-      { t: 1800, l: '[1/8] ✓ 镜像校验通过 sha256:9a4f…b22c', k: 'ok' as const },
-      { t: 2400, l: '[2/8] 备份当前配置至 /var/lib/waf/snap/…', k: 'info' as const },
-      { t: 3200, l: '[2/8] ✓ 备份完成 · 28.4 MB', k: 'ok' as const },
-      { t: 3800, l: '[3/8] HA 切换：主 waf-01 → 备 waf-02', k: 'warn' as const },
-      { t: 4400, l: '[3/8] ✓ 流量已切走 · 无连接中断', k: 'ok' as const },
-      { t: 5000, l: '[4/8] 滚动升级节点 waf-01…', k: 'info' as const },
-      { t: 6200, l: '[4/8] ✓ waf-01 (1/8) 已升级 · 健康', k: 'ok' as const },
-      { t: 7000, l: '[5/8] 滚动升级节点 waf-02 → waf-08…', k: 'info' as const },
-      { t: 8200, l: '[5/8] ✓ 全部 8 节点已完成 · 全集群在线', k: 'ok' as const },
-      { t: 8800, l: '[6/8] 应用迁移脚本 db_v23 → db_v24', k: 'info' as const },
-      { t: 9400, l: '[6/8] ✓ 数据库 schema 升级完成', k: 'ok' as const },
-      { t: 10000, l: '[7/8] 灰度回切流量 5% → 100%…', k: 'info' as const },
-      { t: 11000, l: '[7/8] ✓ 流量回切完成 · 错误率 0.00%', k: 'ok' as const },
-      { t: 11600, l: '[8/8] 系统健康巡检中…', k: 'info' as const },
-      { t: 12400, l: '[8/8] ✓ 全部健康 · 升级成功', k: 'ok' as const },
-      { t: 12800, l: '当前版本 v3.1.0 · 用时 12.8s', k: 'ok' as const },
-    ]
-    const timers = lines.map(line =>
-      setTimeout(() => {
-        setLogLines(prev => [...prev, line])
-        setProgress(Math.round((line.t / 12800) * 100))
-        if (line.t === 12800) setTimeout(() => setStage('done'), 600)
-      }, line.t),
-    )
-    return () => timers.forEach(clearTimeout)
-  }, [stage])
+    if (stage !== 'running' || taskId == null) return
+    let cancelled = false
+    const tick = async () => {
+      if (cancelled) return
+      try {
+        const t = await upgradeApi.getUpgradeTask(taskId)
+        if (cancelled) return
+        setLogLines(t.log)
+        setProgress(t.progress)
+        if (t.status === 'done') {
+          setStage('done')
+          await refresh() // 拉最新的 isCurrent 等
+          return
+        }
+        if (t.status === 'failed') {
+          setTaskError(t.errorMsg || '升级失败')
+          setStage('done') // 复用 done UI，靠 taskError 提示
+          return
+        }
+      } catch (e: unknown) {
+        if (cancelled) return
+        setTaskError(e instanceof Error ? e.message : String(e))
+        setStage('done')
+        return
+      }
+      pollTimerRef.current = setTimeout(tick, 500)
+    }
+    tick()
+    return () => {
+      cancelled = true
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current)
+    }
+  }, [stage, taskId])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [logLines])
 
-  const startUpgrade = () => {
-    setStage('running')
-    setProgress(0)
+  // 启动按钮：调 startUpgradeTask；找不到目标 package 时给出明确提示，
+  // 不再无包静默启动假流程。
+  const startUpgrade = async () => {
+    setTaskError(null)
     setLogLines([])
+    setProgress(0)
+    const target = latest ?? packages.find(p => p.isLatest) ?? null
+    if (!target) {
+      setTaskError('未找到可升级的目标版本')
+      setStage('done')
+      return
+    }
+    try {
+      const task = await upgradeApi.startUpgradeTask(target.id)
+      setTaskId(task.id)
+      setStage('running')
+    } catch (e: unknown) {
+      setTaskError(e instanceof Error ? e.message : String(e))
+      setStage('done')
+    }
   }
   const reset = () => {
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current)
     setStage('idle')
     setProgress(0)
     setLogLines([])
+    setTaskId(null)
+    setTaskError(null)
   }
 
   return (
@@ -229,6 +258,21 @@ export default function PageUpgrade() {
         />
       </div>
 
+      {taskError && (
+        <div
+          className="mb-3"
+          style={{
+            padding: '8px 12px',
+            background: 'rgba(244,63,94,.10)',
+            border: '1px solid rgba(244,63,94,.35)',
+            borderRadius: 8,
+            color: 'var(--danger)',
+            fontSize: 13,
+          }}
+        >
+          升级失败：{taskError}
+        </div>
+      )}
       {(stage === 'preflight' || stage === 'running' || stage === 'done') && (
         <UpgradeExecution
           stage={stage}
@@ -1170,6 +1214,8 @@ function NotesModal({
   pkg: upgradeApi.UpgradePackage
   onClose: () => void
 }) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  useModalA11y({ open: true, onClose, containerRef: panelRef })
   return (
     <div
       onClick={onClose}
@@ -1184,9 +1230,11 @@ function NotesModal({
       }}
     >
       <div
+        ref={panelRef}
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-labelledby="notes-modal-title"
         style={{
           width: 600,
           maxWidth: 'calc(100vw - 32px)',
@@ -1200,7 +1248,7 @@ function NotesModal({
       >
         <div className="flex items-center justify-between mb-3">
           <div>
-            <div className="fw-700 text-0 fs-16 mono">{pkg.version}</div>
+            <div id="notes-modal-title" className="fw-700 text-0 fs-16 mono">{pkg.version}</div>
             <div className="muted fs-12 mt-1">
               {(pkg.releasedAt || pkg.createdAt).slice(0, 10)} · {pkg.type} · {pkg.channel} ·{' '}
               {pkg.sizeLabel}

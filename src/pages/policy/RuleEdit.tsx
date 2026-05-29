@@ -164,45 +164,57 @@ export default function RuleEdit() {
     }
   }
 
-  const runTest = () => {
+  // 试运行：调后端 /policies/dry-run，结果格式化成 UI 已有的 testResult 形状。
+  // 后端 evalRule 接受 field+match 单条；多 chain 的情况下，把『所有条件 AND』
+  // 折叠成一条复合（仍只用第一条；多条件等后端支持 chain 时再扩）。
+  const runTest = async () => {
     const allConds = rule.chains.flatMap(c => c.conditions)
-    const matchedConds = allConds.filter(c => {
-      const target =
-        c.field === 'method'
-          ? testInput.method
-          : c.field === 'uri'
-            ? testInput.url
-            : c.field === 'header.UA'
-              ? testInput.headers.match(/User-Agent: (.+)/i)?.[1] || ''
-              : c.field === 'body'
-                ? testInput.body
-                : c.field === 'query'
-                  ? testInput.url.split('?')[1] || ''
-                  : testInput.url
-      if (c.op === 'regex') {
-        try {
-          return new RegExp(c.value || '', 'i').test(target)
-        } catch {
-          return false
-        }
+    if (allConds.length === 0) {
+      setTestResult({ matched: false, time: '0.000', hitConds: [], action: 'pass' })
+      return
+    }
+    const first = allConds[0]
+    const matchExpr = `${first.op}:${first.value || ''}`
+    // 解析 headers 字符串 "Header-Name: value\nOther: x" → Record
+    const headers: Record<string, string> = {}
+    testInput.headers.split(/\r?\n/).forEach(line => {
+      const idx = line.indexOf(':')
+      if (idx > 0) {
+        headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
       }
-      if (c.op === 'contains') return target.includes(c.value)
-      if (c.op === 'equals') return target === c.value
-      if (c.op === 'in')
-        return c.value
-          .split(',')
-          .map(s => s.trim())
-          .includes(target)
-      if (c.op === 'prefix') return target.startsWith(c.value)
-      return false
     })
-    const matched = matchedConds.length === allConds.length && allConds.length > 0
-    setTestResult({
-      matched,
-      time: (0.04 + Math.random() * 0.08).toFixed(3),
-      hitConds: matchedConds.map(c => c.id),
-      action: matched ? rule.action : 'pass',
-    })
+    try {
+      const backendAction: 'block' | 'log' | 'allow' | 'rate' | 'challenge' =
+        rule.action === 'redirect' ? 'block' : rule.action
+      const res = await policyApi.dryRunRule({
+        rule: {
+          id: isNew ? undefined : Number(rule.id) || undefined,
+          name: rule.name,
+          field: first.field,
+          match: matchExpr,
+          action: backendAction,
+        },
+        request: {
+          method: testInput.method,
+          url: testInput.url,
+          headers,
+          body: testInput.body,
+        },
+      })
+      setTestResult({
+        matched: res.matched !== first.not,
+        time: res.time_ms.toFixed(3),
+        hitConds: res.matched ? [first.id] : [],
+        action: (res.matched !== first.not
+          ? rule.action
+          : 'pass') as 'block' | 'challenge' | 'rate' | 'allow' | 'log' | 'redirect' | 'pass',
+      })
+    } catch (e: unknown) {
+      // 失败时**不**伪造 matched=false/action=pass —— 那会让用户误以为规则放行可疑请求。
+      // 清空 testResult，让 UI 显示『试运行未完成』而不是绿色 PASS。
+      setTestResult(null)
+      window.alert(`试运行失败 —— 无法判定命中状态：${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   return (

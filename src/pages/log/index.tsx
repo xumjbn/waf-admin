@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Card, Icon, Tag, Button, Tabs } from '@/components/ui'
 import { type AttackEvent } from '@/mocks/nebula'
 import * as logApi from '@/api/live/log'
+import { toCSV } from '@/utils/csv'
 
 type FilterTab = 'all' | 'block' | 'chal' | 'log'
 
@@ -119,7 +120,10 @@ export default function LogsPage() {
           <Button
             variant="ghost"
             onClick={() => {
-              // 前端组装 CSV，导出当前过滤后的列表（事件量小，无需后端 export）
+              // 前端组装 CSV，导出当前过滤后的列表（事件量小，无需后端 export）。
+              // csvCell 同时做 RFC 4180 escape + 防御 Excel formula injection：
+              // 攻击者把 `=HYPERLINK(...)` 塞到 site/IP/URI 等用户可控字段后，
+              // 直接用 Excel 打开 CSV 会被钓鱼。utils/csv.ts 统一处理。
               const header = ['时间', 'IP', '国家', '站点', '类型', '方法', 'URI', '规则 ID', '处置']
               const rows = events.map(e => [
                 e.t,
@@ -128,13 +132,11 @@ export default function LogsPage() {
                 e.site,
                 e.type,
                 e.method,
-                e.uri.replace(/"/g, '""'),
+                e.uri,
                 e.ruleId,
                 e.action,
               ])
-              const csv = [header, ...rows]
-                .map(r => r.map(c => `"${String(c)}"`).join(','))
-                .join('\n')
+              const csv = toCSV(header, rows)
               const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8' })
               const url = URL.createObjectURL(blob)
               const a = document.createElement('a')
