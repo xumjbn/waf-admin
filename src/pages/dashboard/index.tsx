@@ -139,10 +139,35 @@ export default function PageDashboard() {
     }
   }, [])
 
-  const radarSeries = [
-    { label: '本月', data: [88, 76, 92, 81, 70, 96], color: '#a855f7' },
-    { label: '上月', data: [80, 68, 84, 72, 66, 94], color: '#22d3ee' },
-  ]
+  // 站点防护评分：6 维从真实配置聚合（/monitor/protection-score）。
+  // 历史对比（"上月"）需评分快照，暂无 → 雷达只显示当前真实评分一条线。
+  const [protectionScore, setProtectionScore] = useState<number[] | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    monitorApi
+      .fetchProtectionScore()
+      .then(s => {
+        if (!cancelled) setProtectionScore(s)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  const radarSeries = useMemo(
+    () => [
+      {
+        label: '当前评分',
+        data: protectionScore && protectionScore.length === 6 ? protectionScore : [0, 0, 0, 0, 0, 0],
+        color: '#a855f7',
+      },
+    ],
+    [protectionScore],
+  )
+  const radarAvg = useMemo(() => {
+    if (!protectionScore || protectionScore.length === 0) return 0
+    return Math.round(protectionScore.reduce((a, b) => a + b, 0) / protectionScore.length)
+  }, [protectionScore])
 
   // 实时拦截事件 + 地球攻击轨迹共用同一份真实攻击日志（拉最近 500 条）。
   // 事件表取最新 7 条；球面拿全部聚合。拉失败/空时回退 mkAttack 让 UI 不空。
@@ -351,16 +376,12 @@ export default function PageDashboard() {
             ]}
           />
         </Card>
-        <Card title="站点防护评分" ico="shield" meta="多维雷达">
+        <Card title="站点防护评分" ico="shield" meta="多维雷达 · 实时配置">
           <Radar axes={RADAR_AXES} series={radarSeries} size={260} />
           <div className="flex gap-3 mt-2" style={{ justifyContent: 'center', fontSize: 11.5 }}>
             <span className="flex items-center gap-2">
               <span style={{ width: 8, height: 8, background: '#a855f7', borderRadius: 2 }} />
-              本月 84
-            </span>
-            <span className="flex items-center gap-2">
-              <span style={{ width: 8, height: 8, background: '#22d3ee', borderRadius: 2 }} />
-              上月 77
+              综合评分 {radarAvg}
             </span>
           </div>
         </Card>

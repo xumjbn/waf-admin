@@ -4,6 +4,7 @@ import { AreaChart, BarChartH, BarsVertical, Gauge } from '@/components/charts'
 import { mkAttack, type AttackEvent } from '@/mocks/nebula'
 import * as monitorApi from '@/api/live/monitor'
 import * as logApi from '@/api/live/log'
+import * as alertApi from '@/api/live/alert'
 
 type FilterValue = 'all' | 'blocked' | 'challenged' | 'logged'
 
@@ -51,6 +52,7 @@ export default function PageMonitor() {
   const [series, setSeries] = useState<monitorApi.RealtimeSeries | null>(null)
   const [attackTypes, setAttackTypes] = useState<monitorApi.AttackTypeSlice[]>([])
   const [cluster, setCluster] = useState<monitorApi.ClusterResources | null>(null)
+  const [alertHourly, setAlertHourly] = useState<alertApi.AlertHourlyBucket[]>([])
 
   // 真实事件流：拉最近攻击日志。paused 时停止刷新。
   useEffect(() => {
@@ -131,6 +133,32 @@ export default function PageMonitor() {
       clearInterval(id)
     }
   }, [paused])
+
+  // 近 24h 告警分布（alert_events 按小时聚合）。
+  useEffect(() => {
+    let cancelled = false
+    alertApi
+      .alertHourlyStats()
+      .then(b => {
+        if (!cancelled) setAlertHourly(b)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // 告警分布柱图数据：每 3 小时取一个桶（与原设计 8 根柱一致），按主导级别配色。
+  const alertBars = useMemo(() => {
+    if (alertHourly.length < 24) return []
+    const pick = [0, 3, 6, 9, 12, 15, 18, 21]
+    return pick.map(h => {
+      const b = alertHourly[h]
+      const color =
+        b.critical > 0 ? '#ef4444' : b.warning > 0 ? '#f59e0b' : b.total > 0 ? '#a855f7' : '#22d3ee'
+      return { label: `${String(h).padStart(2, '0')}h`, value: b.total, color }
+    })
+  }, [alertHourly])
 
   // 把分钟桶映射成三路曲线数组。
   const rtData = useMemo(() => {
@@ -350,21 +378,15 @@ export default function PageMonitor() {
             ))}
           </div>
         </Card>
-        {/* 告警分布需 alert_events 按小时聚合端点（未实现），暂为示意 */}
-        <Card title="近 24 小时告警分布" ico="alert" meta="示意 · 待接告警聚合">
-          <BarsVertical
-            height={210}
-            data={[
-              { label: '00h', value: 4, color: '#ef4444' },
-              { label: '04h', value: 2, color: '#ef4444' },
-              { label: '08h', value: 6, color: '#f59e0b' },
-              { label: '12h', value: 9, color: '#f59e0b' },
-              { label: '14h', value: 18, color: '#ef4444' },
-              { label: '16h', value: 12, color: '#a855f7' },
-              { label: '20h', value: 7, color: '#a855f7' },
-              { label: '23h', value: 3, color: '#22d3ee' },
-            ]}
-          />
+        {/* 告警分布：alert_events 近 24h 按小时聚合（每 3 小时取样 8 根柱） */}
+        <Card title="近 24 小时告警分布" ico="alert" meta="按级别配色">
+          {alertBars.length > 0 ? (
+            <BarsVertical height={210} data={alertBars} />
+          ) : (
+            <div className="muted fs-13" style={{ padding: 60, textAlign: 'center' }}>
+              近 24 小时暂无告警
+            </div>
+          )}
         </Card>
       </div>
 

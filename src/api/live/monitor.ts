@@ -233,6 +233,16 @@ interface BackendClusterResources {
   generated_at: string
 }
 
+// --- NW · 01 站点防护评分（6 维，真配置聚合）
+
+export async function fetchProtectionScore(): Promise<number[]> {
+  const res = await axios.get<{ scores: number[] }>(
+    '/api/v1/monitor/protection-score',
+    { headers: authHeader() },
+  )
+  return res.data.scores ?? []
+}
+
 export async function fetchClusterResources(): Promise<ClusterResources> {
   const res = await axios.get<BackendClusterResources>(
     '/api/v1/monitor/cluster-resources',

@@ -115,6 +115,23 @@ export async function alertStats(): Promise<AlertStats> {
   return res.data
 }
 
+// 近 24h 按小时告警分布（监控大屏柱图）。
+export interface AlertHourlyBucket {
+  hour: number
+  total: number
+  critical: number
+  warning: number
+  info: number
+}
+
+export async function alertHourlyStats(): Promise<AlertHourlyBucket[]> {
+  const res = await axios.get<{ buckets: AlertHourlyBucket[] }>(
+    '/api/v1/alert/events/stats/hourly',
+    { headers: authHeader() },
+  )
+  return res.data.buckets ?? []
+}
+
 // --- channels（NW · 06 alert channel 全 CRUD，migration 000013 起）
 
 export type ChannelKind = 'email' | 'wechat' | 'dingtalk' | 'pagerduty' | 'webhook' | 'sms'
