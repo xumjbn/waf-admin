@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Card, Icon, type IconName, Tag, Button, Toggle, Tabs, cn, KPI } from '@/components/ui'
 import { AreaChart, BarChartH } from '@/components/charts'
-import { RULES, SITES, mkAttack } from '@/mocks/nebula'
+import { RULES, SITES, type AttackEvent } from '@/mocks/nebula'
 import { hexA } from '@/components/charts/canvasUtils'
 import * as policyApi from '@/api/live/policy'
+import * as logApi from '@/api/live/log'
 
 type Action = 'block' | 'challenge' | 'rate' | 'allow' | 'log' | 'redirect'
 type Severity = 'low' | 'medium' | 'high'
@@ -94,6 +95,21 @@ export default function RuleEdit() {
   }))
 
   const [tab, setTab] = useState<TabKey>('builder')
+  // 真实命中元信息（modsec_id + 累计命中），命中分析 Tab 用。
+  const [hitMeta, setHitMeta] = useState<policyApi.RuleHitMeta | null>(null)
+  useEffect(() => {
+    if (isNew || !id) return
+    let cancelled = false
+    policyApi
+      .getRuleHitMeta(id)
+      .then(m => {
+        if (!cancelled) setHitMeta(m)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [id, isNew])
   const [testInput, setTestInput] = useState({
     method: 'POST',
     url: "/api/v1/users?id=1' OR '1'='1",
@@ -395,7 +411,7 @@ export default function RuleEdit() {
               rule={rule}
             />
           )}
-          {tab === 'hits' && <HitsPane />}
+          {tab === 'hits' && <HitsPane meta={hitMeta} />}
           {tab === 'history' && <HistoryPane />}
         </div>
 
@@ -1045,43 +1061,91 @@ function TestPane({
   )
 }
 
-function HitsPane() {
-  const hourlyData = useMemo(
-    () =>
-      Array.from({ length: 24 }, (_, i) =>
-        Math.floor(200 + Math.sin(i / 3) * 150 + Math.random() * 180),
-      ),
-    [],
-  )
+function HitsPane({ meta }: { meta: policyApi.RuleHitMeta | null }) {
+  // 真实命中趋势 + 触发样本：按规则 modsec_id 过滤 attack_logs。
+  // 无 modsec_id（用户自建规则未关联 modsec）时退化为全局攻击数据。
+  const [trend, setTrend] = useState<{ labels: string[]; data: number[] }>({ labels: [], data: [] })
+  const [samples, setSamples] = useState<AttackEvent[]>([])
+  const [siteDist, setSiteDist] = useState<{ label: string; value: number; color: string }[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    const ruleId = meta?.modsecId || ''
+    logApi
+      .attackTrend({ ruleId, hours: 24 })
+      .then(pts => {
+        if (cancelled) return
+        setTrend({
+          labels: pts.map(p => {
+            const d = new Date(p.t)
+            return `${String(d.getHours()).padStart(2, '0')}:00`
+          }),
+          data: pts.map(p => p.count),
+        })
+      })
+      .catch(() => {})
+    // 触发样本：拉最近攻击日志，有 modsec_id 时按 ruleId 过滤。
+    logApi
+      .listAttackLogs({ pageSize: 200 })
+      .then(({ items }) => {
+        if (cancelled) return
+        const filtered = ruleId ? items.filter(e => e.ruleId === ruleId) : items
+        setSamples(filtered.slice(0, 6))
+        // 命中分布·站点：按 site 聚合 filtered。
+        const bySite: Record<string, number> = {}
+        filtered.forEach(e => {
+          const s = e.site || '—'
+          bySite[s] = (bySite[s] || 0) + 1
+        })
+        const colors = ['#a855f7', '#ec4899', '#f59e0b', '#22d3ee', '#10b981']
+        setSiteDist(
+          Object.entries(bySite)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([label, value], i) => ({ label, value, color: colors[i % colors.length] })),
+        )
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [meta])
+
+  const totalHits = meta?.hits ?? 0
+  const recent24h = trend.data.reduce((a, b) => a + b, 0)
+
   return (
     <>
       <div className="row r-4 mb-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
-        <KPI label="今日命中" value="2,148" ico="crosshair" kind="brand" delta="+18%" deltaDir="up" />
-        <KPI label="近 7 天" value="14.6K" ico="activity" kind="brand" />
-        <KPI label="误报率" value="0.32" unit="%" ico="alert" kind="warn" />
-        <KPI label="平均处置时延" value="0.07" unit="ms" ico="pulse" kind="info" />
+        <KPI label="累计命中" value={totalHits.toLocaleString()} ico="crosshair" kind="brand" />
+        <KPI label="近 24h 触发" value={recent24h.toLocaleString()} ico="activity" kind="brand" />
+        <KPI label="近期样本" value={String(samples.length)} ico="logs" kind="info" />
+        <KPI label="关联 ModSec" value={meta?.modsecId || '自建'} ico="shield" kind="warn" />
       </div>
 
       <Card title="近 24 小时命中趋势" ico="activity" className="mb-4">
-        <AreaChart
-          height={220}
-          labels={Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}:00`)}
-          series={[{ label: '命中', data: hourlyData, color: '#a855f7' }]}
-        />
+        {trend.data.length > 0 ? (
+          <AreaChart
+            height={220}
+            labels={trend.labels}
+            series={[{ label: '命中', data: trend.data, color: '#a855f7' }]}
+          />
+        ) : (
+          <div className="muted fs-13" style={{ padding: 40, textAlign: 'center' }}>
+            该规则近 24h 无命中记录
+          </div>
+        )}
       </Card>
 
       <div className="row r-1-1">
         <Card title="命中分布 · 站点" ico="sites">
-          <BarChartH
-            height={180}
-            data={[
-              { label: '官网主站', value: 842, color: '#a855f7' },
-              { label: 'API 网关', value: 524, color: '#ec4899' },
-              { label: '管理后台', value: 388, color: '#f59e0b' },
-              { label: '支付服务', value: 210, color: '#22d3ee' },
-              { label: '移动端网关', value: 184, color: '#10b981' },
-            ]}
-          />
+          {siteDist.length > 0 ? (
+            <BarChartH height={180} data={siteDist} />
+          ) : (
+            <div className="muted fs-13" style={{ padding: 40, textAlign: 'center' }}>
+              暂无站点命中数据
+            </div>
+          )}
         </Card>
         <Card title="近期触发样本" ico="logs" bodyClass="np">
           <table>
@@ -1094,7 +1158,14 @@ function HitsPane() {
               </tr>
             </thead>
             <tbody>
-              {Array.from({ length: 6 }, () => mkAttack()).map(e => (
+              {samples.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="muted fs-12" style={{ padding: 20, textAlign: 'center' }}>
+                    暂无触发样本
+                  </td>
+                </tr>
+              )}
+              {samples.map(e => (
                 <tr key={e.id}>
                   <td className="mono fs-11">{e.t}</td>
                   <td className="mono fs-12">
@@ -1102,7 +1173,7 @@ function HitsPane() {
                   </td>
                   <td className="fs-12">{e.site}</td>
                   <td>
-                    <Tag kind="ok">BLOCK</Tag>
+                    <Tag kind="ok">{(e.action || 'BLOCK').toUpperCase()}</Tag>
                   </td>
                 </tr>
               ))}

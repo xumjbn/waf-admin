@@ -83,6 +83,25 @@ export async function listRules(): Promise<UiRule[]> {
   return arr.map(adapt)
 }
 
+// getRuleHitMeta 取某规则的真实命中元信息（modsec_id + 累计命中），
+// 供 RuleEdit 命中分析 Tab 拉真趋势 / 样例。找不到返回 null。
+export interface RuleHitMeta {
+  modsecId: string
+  hits: number
+  name: string
+}
+
+export async function getRuleHitMeta(id: string | number): Promise<RuleHitMeta | null> {
+  const res = await axios.get<{ data?: BackendPolicy[]; items?: BackendPolicy[]; policies?: BackendPolicy[] }>(
+    '/api/v1/policies',
+    { headers: authHeader(), params: { page: 1, page_size: 200 } },
+  )
+  const arr = res.data.data ?? res.data.items ?? res.data.policies ?? []
+  const found = arr.find(p => String(p.id) === String(id))
+  if (!found) return null
+  return { modsecId: found.modsec_id ?? '', hits: found.hits ?? 0, name: found.name }
+}
+
 export interface SaveRulePayload {
   name: string
   description?: string

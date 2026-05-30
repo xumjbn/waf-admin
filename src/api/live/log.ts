@@ -128,6 +128,28 @@ export async function listAttackLogs(opts?: {
   }
 }
 
+// 攻击日志按小时趋势（可选 site / ruleId 过滤）。喂 RuleEdit 命中趋势 / site 详情趋势。
+export interface AttackTrendPoint {
+  t: string
+  count: number
+}
+
+export async function attackTrend(opts?: {
+  hours?: number
+  site?: string
+  ruleId?: string
+}): Promise<AttackTrendPoint[]> {
+  const res = await axios.get<{ points: AttackTrendPoint[] }>('/api/v1/logs/attack/trend', {
+    headers: authHeader(),
+    params: {
+      hours: opts?.hours ?? 24,
+      site: opts?.site || undefined,
+      rule_id: opts?.ruleId || undefined,
+    },
+  })
+  return res.data.points ?? []
+}
+
 export async function clearAttackLogs(): Promise<void> {
   await axios.delete('/api/v1/logs/attack', { headers: authHeader() })
 }

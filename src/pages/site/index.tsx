@@ -4,6 +4,7 @@ import { Card, Icon, KPI, Tag, Bar, Button, Tabs } from '@/components/ui'
 import { AreaChart } from '@/components/charts'
 import { CLUSTERS, type Site } from '@/mocks/nebula'
 import * as siteApi from '@/api/live/site'
+import * as logApi from '@/api/live/log'
 import SiteWizard from './SiteWizard'
 import SiteEdit from './SiteEdit'
 
@@ -351,8 +352,27 @@ function TopologyView({
 
 function SiteDetailPanel({ site }: { site: Site }) {
   const navigate = useNavigate()
-  const trendData = Array.from({ length: 24 }, () => 800 + Math.random() * 1500)
-  const trendLabels = Array.from({ length: 24 }, (_, i) => `-${(24 - i) * 2}m`)
+  // 近 24h 该站点攻击趋势（真实 —— attack_logs 按小时聚合）。
+  const [trend, setTrend] = useState<{ labels: string[]; data: number[] }>({ labels: [], data: [] })
+  useEffect(() => {
+    let cancelled = false
+    logApi
+      .attackTrend({ site: site.name, hours: 24 })
+      .then(pts => {
+        if (cancelled) return
+        setTrend({
+          labels: pts.map(p => {
+            const d = new Date(p.t)
+            return `${String(d.getHours()).padStart(2, '0')}:00`
+          }),
+          data: pts.map(p => p.count),
+        })
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [site.name])
 
   return (
     <div className="stack">
@@ -426,12 +446,18 @@ function SiteDetailPanel({ site }: { site: Site }) {
         </div>
       </Card>
 
-      <Card title="近 1h 流量" ico="activity">
-        <AreaChart
-          height={130}
-          labels={trendLabels}
-          series={[{ label: 'QPS', data: trendData, color: '#a855f7' }]}
-        />
+      <Card title="近 24h 攻击趋势" ico="activity">
+        {trend.data.length > 0 ? (
+          <AreaChart
+            height={130}
+            labels={trend.labels}
+            series={[{ label: '攻击', data: trend.data, color: '#a855f7' }]}
+          />
+        ) : (
+          <div className="muted fs-12" style={{ padding: 28, textAlign: 'center' }}>
+            该站点近 24h 暂无攻击记录
+          </div>
+        )}
       </Card>
     </div>
   )

@@ -12,6 +12,7 @@ import {
 import { SITES, CLUSTERS, RULES, type Site } from '@/mocks/nebula'
 import { hexA } from '@/components/charts/canvasUtils'
 import * as siteApi from '@/api/live/site'
+import * as logApi from '@/api/live/log'
 
 interface EditData {
   name: string
@@ -319,13 +320,24 @@ function SiteStatusBanner({
   const status = data.paused ? 'paused' : data.mode === 'observe' ? 'observe' : 'protected'
   const statusColor = { protected: '#10b981', observe: '#f59e0b', paused: '#5d556e' }[status]
   const statusLabel = { protected: '防护中', observe: '观察模式', paused: '已暂停' }[status]
-  const [tick, setTick] = useState(0)
+  // 近 24h 该站点攻击趋势（真实 attack_logs 聚合），30s 刷新；空时给单点 0。
+  const [spark, setSpark] = useState<number[]>([0])
   useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 2500)
-    return () => clearInterval(id)
-  }, [])
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const spark = useMemo(() => Array.from({ length: 24 }, () => 800 + Math.random() * 1400), [tick])
+    let cancelled = false
+    const load = () =>
+      logApi
+        .attackTrend({ site: site.name, hours: 24 })
+        .then(pts => {
+          if (!cancelled) setSpark(pts.length > 0 ? pts.map(p => p.count) : [0])
+        })
+        .catch(() => {})
+    load()
+    const id = setInterval(load, 30_000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [site.name])
 
   return (
     <div
