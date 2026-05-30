@@ -50,6 +50,7 @@ export default function PageMonitor() {
   const [events, setEvents] = useState<AttackEvent[]>([])
   const [series, setSeries] = useState<monitorApi.RealtimeSeries | null>(null)
   const [attackTypes, setAttackTypes] = useState<monitorApi.AttackTypeSlice[]>([])
+  const [cluster, setCluster] = useState<monitorApi.ClusterResources | null>(null)
 
   // 真实事件流：拉最近攻击日志。paused 时停止刷新。
   useEffect(() => {
@@ -110,6 +111,26 @@ export default function PageMonitor() {
       cancelled = true
     }
   }, [])
+
+  // 集群资源水位：agent 心跳采集的 cpu/mem/disk/rps（monitor_metrics 真聚合）。
+  useEffect(() => {
+    if (paused) return
+    let cancelled = false
+    const load = async () => {
+      try {
+        const c = await monitorApi.fetchClusterResources()
+        if (!cancelled) setCluster(c)
+      } catch {
+        /* 保留上一次 */
+      }
+    }
+    load()
+    const id = setInterval(load, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [paused])
 
   // 把分钟桶映射成三路曲线数组。
   const rtData = useMemo(() => {
@@ -201,7 +222,12 @@ export default function PageMonitor() {
         <KPI label="拦截 / 分钟" value={lastBlock} ico="shield" kind="danger" />
         <KPI label="挑战 / 分钟" value={lastChal} ico="lock" kind="warn" />
         <KPI label="放行率" value={passRate} unit="%" ico="check" kind="ok" />
-        <KPI label="可用率" value="99.99" unit="%" ico="pulse" kind="info" />
+        <KPI
+          label="集群 QPS"
+          value={cluster ? Math.round(cluster.rps).toLocaleString() : '0'}
+          ico="pulse"
+          kind="info"
+        />
       </div>
 
       <div className="row r-2-1 mb-4">
@@ -306,13 +332,17 @@ export default function PageMonitor() {
       </Card>
 
       <div className="row r-1-1 mt-4">
-        {/* CPU/内存/带宽需 agent 高频上报 monitor_metrics（管道未实现），暂为示意值 */}
-        <Card title="集群资源监控" ico="cpu" meta="示意 · 待接 agent 指标">
+        {/* CPU/内存/磁盘来自 agent 心跳采集（monitor_metrics 每节点最新样本聚合） */}
+        <Card
+          title="集群资源监控"
+          ico="cpu"
+          meta={cluster && cluster.nodeCount > 0 ? `${cluster.nodeCount} 节点 · 近 5 分钟` : '等待节点上报'}
+        >
           <div className="row r-3 gap-3">
             {[
-              { label: 'CPU 平均', value: 38, color: '#a855f7' },
-              { label: '内存平均', value: 52, color: '#ec4899' },
-              { label: '入网带宽', value: 64, color: '#22d3ee' },
+              { label: 'CPU 平均', value: Math.round(cluster?.cpuAvgPct ?? 0), color: '#a855f7' },
+              { label: '内存平均', value: Math.round(cluster?.memAvgPct ?? 0), color: '#ec4899' },
+              { label: '磁盘平均', value: Math.round(cluster?.diskAvgPct ?? 0), color: '#22d3ee' },
             ].map(g => (
               <div key={g.label} style={{ textAlign: 'center' }}>
                 <Gauge value={g.value} label={g.label} color={g.color} size={150} />

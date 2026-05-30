@@ -211,6 +211,45 @@ interface BackendRealtime {
   generated_at: string
 }
 
+// --- NW · 02 集群资源水位（agent 心跳写入 monitor_metrics 的真实采集）
+
+export interface ClusterResources {
+  cpuAvgPct: number
+  memAvgPct: number
+  diskAvgPct: number
+  netConnections: number
+  rps: number
+  nodeCount: number
+  generatedAt: string
+}
+
+interface BackendClusterResources {
+  cpu_avg_pct: number
+  mem_avg_pct: number
+  disk_avg_pct: number
+  net_connections: number
+  rps: number
+  node_count: number
+  generated_at: string
+}
+
+export async function fetchClusterResources(): Promise<ClusterResources> {
+  const res = await axios.get<BackendClusterResources>(
+    '/api/v1/monitor/cluster-resources',
+    { headers: authHeader() },
+  )
+  const b = res.data
+  return {
+    cpuAvgPct: b.cpu_avg_pct ?? 0,
+    memAvgPct: b.mem_avg_pct ?? 0,
+    diskAvgPct: b.disk_avg_pct ?? 0,
+    netConnections: b.net_connections ?? 0,
+    rps: b.rps ?? 0,
+    nodeCount: b.node_count ?? 0,
+    generatedAt: b.generated_at,
+  }
+}
+
 export async function fetchRealtimeSeries(minutes = 60): Promise<RealtimeSeries> {
   const res = await axios.get<BackendRealtime>(
     `/api/v1/monitor/realtime-series?minutes=${minutes}`,

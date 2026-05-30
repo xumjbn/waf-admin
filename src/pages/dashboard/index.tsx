@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, Icon, KPI, Tag, Bar, Button } from '@/components/ui'
 import { AreaChart, BarChartH, Donut, Heatmap, Radar } from '@/components/charts'
 import { AttackGlobe, type AttackGlobeHandle } from '@/components/globe/AttackGlobe'
-import { INSTANCES, mkAttack, type AttackEvent } from '@/mocks/nebula'
+import { mkAttack, type AttackEvent, type Instance } from '@/mocks/nebula'
 import * as logApi from '@/api/live/log'
 import * as monitorApi from '@/api/live/monitor'
+import * as instanceApi from '@/api/live/instance'
 
 // 数字格式化：大数转 K/M，给 KPI 卡用。
 function fmtCompact(n: number): string {
@@ -122,6 +123,21 @@ export default function PageDashboard() {
   }, [dash])
 
   const heatmap = useMemo(() => remapHeatmap(dash?.heatmap ?? []), [dash])
+
+  // 实例健康：拉真实例列表（cpu/qps 来自 heartbeats），空时显示空态。
+  const [instances, setInstances] = useState<Instance[]>([])
+  useEffect(() => {
+    let cancelled = false
+    instanceApi
+      .listInstances()
+      .then(list => {
+        if (!cancelled) setInstances(list)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const radarSeries = [
     { label: '本月', data: [88, 76, 92, 81, 70, 96], color: '#a855f7' },
@@ -351,8 +367,13 @@ export default function PageDashboard() {
       </div>
 
       <div className="row r-1-2 mb-4">
-        <Card title="实例健康" ico="cpu" meta="集群 · 在线">
-          {INSTANCES.slice(0, 5).map(i => (
+        <Card title="实例健康" ico="cpu" meta={`集群 · ${instances.length} 节点`}>
+          {instances.length === 0 && (
+            <div className="muted fs-12" style={{ padding: '16px 0', textAlign: 'center' }}>
+              暂无在线实例 —— 请在节点部署 waf-agent
+            </div>
+          )}
+          {instances.slice(0, 5).map(i => (
             <div
               key={i.id}
               className="flex items-center gap-3"
