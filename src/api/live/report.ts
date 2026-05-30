@@ -8,6 +8,7 @@ import axios from 'axios'
 import { useAuthStore } from '@/store/auth'
 
 export interface ReportTask {
+  id: number      // 定时报表 id（开关 / 触发用）
   n: string       // 名称
   cr: string      // cron 表达式
   next: string    // 下次执行时间（格式化）
@@ -37,6 +38,7 @@ function fmtTime(s?: string): string {
 
 function adapt(b: BackendTimingReport): ReportTask {
   return {
+    id: b.id,
     n: b.name,
     cr: b.cron || '—',
     next: fmtTime(b.next_run_at),
@@ -51,6 +53,15 @@ export async function listReportTasks(): Promise<ReportTask[]> {
   )
   const arr = Array.isArray(res.data) ? res.data : (res.data.data ?? res.data.items ?? [])
   return arr.map(adapt)
+}
+
+// 启用/停用定时任务 —— 调度器据此决定是否到点执行。
+export async function setReportTaskEnabled(id: number, enabled: boolean): Promise<void> {
+  await axios.post(
+    `/api/v1/reports/timing/${id}/enabled`,
+    { enabled },
+    { headers: authHeader() },
+  )
 }
 
 // --- 统一列表（NW · 08 报表中心 - migration 000014 起）

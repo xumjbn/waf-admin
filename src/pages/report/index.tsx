@@ -260,15 +260,21 @@ export default function ReportsPage() {
             </div>
           )}
           {tasks.map((t, i) => (
-            <div key={t.n} style={{ padding: '10px 0', borderBottom: '1px solid var(--line-2)' }}>
+            <div key={t.id || t.n} style={{ padding: '10px 0', borderBottom: '1px solid var(--line-2)' }}>
               <div className="flex items-center justify-between mb-2">
                 <span className="fw-600 text-0 fs-13">{t.n}</span>
                 <Toggle
                   on={t.on}
-                  onChange={v =>
-                    // 仅本地切，后端 timing 没有 PUT enabled 端点，留 TODO
+                  onChange={async v => {
+                    // 乐观更新 + 调后端落库，失败回滚（调度器据 is_enabled 决定是否跑）
                     setTasks(prev => prev.map((x, j) => (i === j ? { ...x, on: v } : x)))
-                  }
+                    try {
+                      await reportApi.setReportTaskEnabled(t.id, v)
+                    } catch (e: unknown) {
+                      setTasks(prev => prev.map((x, j) => (i === j ? { ...x, on: !v } : x)))
+                      window.alert(`切换失败：${e instanceof Error ? e.message : String(e)}`)
+                    }
+                  }}
                 />
               </div>
               <div className="flex items-center justify-between">
