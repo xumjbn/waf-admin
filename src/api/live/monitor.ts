@@ -114,9 +114,7 @@ interface BackendKPI {
   generated_at: string
 }
 
-export async function fetchKpiSnapshot(): Promise<KPISnapshot> {
-  const res = await axios.get<BackendKPI>('/api/v1/monitor/kpi', { headers: authHeader() })
-  const b = res.data
+function adaptKpi(b: BackendKPI): KPISnapshot {
   return {
     blockedToday: b.blocked_today,
     totalRequestsToday: b.total_requests_today,
@@ -128,6 +126,109 @@ export async function fetchKpiSnapshot(): Promise<KPISnapshot> {
     sparkLatency: b.spark_latency ?? [],
     sparkBlockRate: b.spark_block_rate ?? [],
     sparkAlerts: b.spark_alerts ?? [],
+    generatedAt: b.generated_at,
+  }
+}
+
+export async function fetchKpiSnapshot(): Promise<KPISnapshot> {
+  const res = await axios.get<BackendKPI>('/api/v1/monitor/kpi', { headers: authHeader() })
+  return adaptKpi(res.data)
+}
+
+// --- NW · 01 总览 dashboard 一次性聚合（KPI + TOP + 类型分布 + 7×24 热力图）
+
+export interface TopThreatSource {
+  srcIp: string
+  country: string
+  count: number
+}
+
+export interface AttackTypeSlice {
+  type: string
+  label: string
+  color: string
+  count: number
+}
+
+export interface DashboardSnapshot {
+  kpi: KPISnapshot
+  topSources: TopThreatSource[]
+  attackTypes: AttackTypeSlice[]
+  heatmap: number[][] // [7][24]
+  generatedAt: string
+}
+
+interface BackendDashboard {
+  kpi: BackendKPI
+  top_sources: { src_ip: string; country: string; count: number }[] | null
+  attack_types: { type: string; label: string; color: string; count: number }[] | null
+  heatmap: number[][] | null
+  generated_at: string
+}
+
+export async function fetchDashboard(window: '24h' | '7d' | '30d' = '24h'): Promise<DashboardSnapshot> {
+  const res = await axios.get<BackendDashboard>(
+    `/api/v1/monitor/dashboard?window=${window}`,
+    { headers: authHeader() },
+  )
+  const b = res.data
+  return {
+    kpi: adaptKpi(b.kpi),
+    topSources: (b.top_sources ?? []).map(s => ({
+      srcIp: s.src_ip,
+      country: s.country,
+      count: s.count,
+    })),
+    attackTypes: (b.attack_types ?? []).map(a => ({
+      type: a.type,
+      label: a.label,
+      color: a.color,
+      count: a.count,
+    })),
+    heatmap: b.heatmap ?? [],
+    generatedAt: b.generated_at,
+  }
+}
+
+// --- NW · 02 监控大屏：近 N 分钟 req/block/chal 三路时序
+
+export interface RealtimePoint {
+  bucket: string
+  requests: number
+  blocked: number
+  challenged: number
+}
+
+export interface RealtimeSeries {
+  points: RealtimePoint[]
+  topSources: TopThreatSource[]
+  generatedAt: string
+}
+
+interface BackendRealtime {
+  points: { bucket: string; requests: number; blocked: number; challenged: number }[] | null
+  top_sources: { src_ip: string; country: string; count: number }[] | null
+  generated_at: string
+}
+
+export async function fetchRealtimeSeries(minutes = 60): Promise<RealtimeSeries> {
+  const res = await axios.get<BackendRealtime>(
+    `/api/v1/monitor/realtime-series?minutes=${minutes}`,
+    { headers: authHeader() },
+  )
+  const b = res.data
+  return {
+    points: (b.points ?? []).map(p => ({
+      bucket: p.bucket,
+      requests: p.requests,
+      blocked: p.blocked,
+      challenged: p.challenged,
+    })),
+    topSources: (b.top_sources ?? []).map(s => ({
+      srcIp: s.src_ip,
+      country: s.country,
+      count: s.count,
+    })),
     generatedAt: b.generated_at,
   }
 }

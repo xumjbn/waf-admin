@@ -3,8 +3,12 @@ import { Card, Icon, KPI, Tag, Tabs, Button, cn } from '@/components/ui'
 import { AreaChart, BarChartH, BarsVertical, Gauge } from '@/components/charts'
 import { mkAttack, type AttackEvent } from '@/mocks/nebula'
 import * as monitorApi from '@/api/live/monitor'
+import * as logApi from '@/api/live/log'
 
 type FilterValue = 'all' | 'blocked' | 'challenged' | 'logged'
+
+// 时间窗口选择 → 分钟数。realtime-series 按分钟分桶，1h=60 桶正好对应原 60 点曲线。
+const WINDOW_MINUTES: Record<string, number> = { '1m': 1, '5m': 5, '1h': 60 }
 
 const FILTER_TABS = [
   { value: 'all' as const, label: '全部' },
@@ -42,73 +46,100 @@ function actionShort(action: AttackEvent['action']): string {
 export default function PageMonitor() {
   const [paused, setPaused] = useState(false)
   const [filter, setFilter] = useState<FilterValue>('all')
-  const [events, setEvents] = useState<AttackEvent[]>(() =>
-    Array.from({ length: 18 }, () => mkAttack()),
-  )
+  const [windowSel, setWindowSel] = useState<'1m' | '5m' | '1h'>('1h')
+  const [events, setEvents] = useState<AttackEvent[]>([])
+  const [series, setSeries] = useState<monitorApi.RealtimeSeries | null>(null)
+  const [attackTypes, setAttackTypes] = useState<monitorApi.AttackTypeSlice[]>([])
 
-  // 预拉真实监控指标，供后续把 KPI/图组件切到真数据时使用
+  // 真实事件流：拉最近攻击日志。paused 时停止刷新。
   useEffect(() => {
+    if (paused) return
+    let cancelled = false
+    const load = async () => {
+      try {
+        const { items } = await logApi.listAttackLogs({ pageSize: 60 })
+        if (cancelled) return
+        setEvents(items.length > 0 ? items : Array.from({ length: 18 }, () => mkAttack()))
+      } catch {
+        if (!cancelled && events.length === 0) {
+          setEvents(Array.from({ length: 18 }, () => mkAttack()))
+        }
+      }
+    }
+    load()
+    const id = setInterval(load, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paused])
+
+  // 真实趋势：realtime-series 按分钟分桶（attack_logs 聚合）。
+  // 注：真正的秒级 QPS 需要 agent 高频上报指标管道（未实现），此处为分钟级真实数据。
+  useEffect(() => {
+    if (paused) return
+    let cancelled = false
+    const minutes = WINDOW_MINUTES[windowSel] ?? 60
+    const load = async () => {
+      try {
+        const s = await monitorApi.fetchRealtimeSeries(minutes)
+        if (!cancelled) setSeries(s)
+      } catch {
+        /* 静默：保留上一次数据 */
+      }
+    }
+    load()
+    const id = setInterval(load, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [paused, windowSel])
+
+  // 攻击类型 TOP：复用 dashboard 聚合的 attackTypes（近 24h）。
+  useEffect(() => {
+    let cancelled = false
     monitorApi
-      .listMetrics()
-      .then(metrics => {
-        // eslint-disable-next-line no-console
-        if (metrics.length > 0) console.debug('[monitor] backend metrics', metrics)
+      .fetchDashboard('24h')
+      .then(d => {
+        if (!cancelled) setAttackTypes(d.attackTypes)
       })
-      .catch(err => {
-        // eslint-disable-next-line no-console
-        console.error('[monitor api]', err)
-      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  useEffect(() => {
-    if (paused) return
-    const id = setInterval(() => {
-      setEvents(prev => {
-        const batch = Array.from({ length: 1 + Math.floor(Math.random() * 2) }, () => mkAttack())
-        return [...batch, ...prev].slice(0, 30)
-      })
-    }, 1100)
-    return () => clearInterval(id)
-  }, [paused])
+  // 把分钟桶映射成三路曲线数组。
+  const rtData = useMemo(() => {
+    const pts = series?.points ?? []
+    return {
+      req: pts.map(p => p.requests),
+      block: pts.map(p => p.blocked),
+      chal: pts.map(p => p.challenged),
+    }
+  }, [series])
 
-  const [rtData, setRtData] = useState(() => ({
-    req: Array.from({ length: 60 }, () => 800 + Math.random() * 400),
-    block: Array.from({ length: 60 }, () => 30 + Math.random() * 60),
-    chal: Array.from({ length: 60 }, () => 10 + Math.random() * 30),
-  }))
-  useEffect(() => {
-    if (paused) return
-    const id = setInterval(() => {
-      setRtData(d => ({
-        req: [...d.req.slice(1), 800 + Math.random() * 500],
-        block: [...d.block.slice(1), 30 + Math.random() * 80 + (Math.random() > 0.92 ? 200 : 0)],
-        chal: [...d.chal.slice(1), 10 + Math.random() * 40],
-      }))
-    }, 900)
-    return () => clearInterval(id)
-  }, [paused])
+  const lastPoint = series?.points?.[series.points.length - 1]
 
   const top5 = useMemo(() => {
-    const counts: Record<string, number> = {}
-    events.forEach(e => {
-      counts[e.typeLabel] = (counts[e.typeLabel] || 0) + 1
-    })
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([label, value], i) => ({
-        label,
-        value: value * 80 + Math.floor(Math.random() * 200),
-        color: TYPE_COLORS[i] ?? '#5d556e',
+    if (attackTypes.length > 0) {
+      return attackTypes.slice(0, 6).map((t, i) => ({
+        label: t.label,
+        value: t.count,
+        color: t.color || (TYPE_COLORS[i] ?? '#5d556e'),
       }))
-  }, [events])
+    }
+    return []
+  }, [attackTypes])
 
   const filteredEvents = filter === 'all' ? events : events.filter(e => e.action === filter)
 
-  const passRate = (
-    100 -
-    (100 * (rtData.block[59] + rtData.chal[59])) / Math.max(1, rtData.req[59])
-  ).toFixed(2)
+  const lastReq = lastPoint?.requests ?? 0
+  const lastBlock = lastPoint?.blocked ?? 0
+  const lastChal = lastPoint?.challenged ?? 0
+  const passRate = (100 - (100 * (lastBlock + lastChal)) / Math.max(1, lastReq)).toFixed(2)
 
   return (
     <>
@@ -131,7 +162,11 @@ export default function PageMonitor() {
             <option value="www">官网主站</option>
             <option value="api">API 网关</option>
           </select>
-          <select className="select" defaultValue="1m">
+          <select
+            className="select"
+            value={windowSel}
+            onChange={e => setWindowSel(e.target.value as '1m' | '5m' | '1h')}
+          >
             <option value="1m">近 1 分钟</option>
             <option value="5m">近 5 分钟</option>
             <option value="1h">近 1 小时</option>
@@ -158,22 +193,22 @@ export default function PageMonitor() {
 
       <div className="kpi-grid c5">
         <KPI
-          label="实时 QPS"
-          value={Math.floor(rtData.req[59]).toLocaleString()}
+          label="请求 / 分钟"
+          value={lastReq.toLocaleString()}
           ico="activity"
           kind="brand"
         />
-        <KPI label="拦截 / 秒" value={Math.floor(rtData.block[59])} ico="shield" kind="danger" />
-        <KPI label="挑战 / 秒" value={Math.floor(rtData.chal[59])} ico="lock" kind="warn" />
+        <KPI label="拦截 / 分钟" value={lastBlock} ico="shield" kind="danger" />
+        <KPI label="挑战 / 分钟" value={lastChal} ico="lock" kind="warn" />
         <KPI label="放行率" value={passRate} unit="%" ico="check" kind="ok" />
         <KPI label="可用率" value="99.99" unit="%" ico="pulse" kind="info" />
       </div>
 
       <div className="row r-2-1 mb-4">
         <Card
-          title="请求 / 拦截 / 挑战 实时趋势"
+          title="请求 / 拦截 / 挑战 趋势"
           ico="activity"
-          meta="60s 滚动 · 0.9s 采样"
+          meta="按分钟聚合 · 5s 刷新"
           actions={
             <>
               <Tag kind="info">通过</Tag>
@@ -182,19 +217,31 @@ export default function PageMonitor() {
             </>
           }
         >
-          <AreaChart
-            height={280}
-            labels={Array.from({ length: 60 }, (_, i) => `-${60 - i}s`)}
-            series={[
-              { label: '通过', data: rtData.req, color: '#22d3ee' },
-              { label: '拦截', data: rtData.block, color: '#ef4444' },
-              { label: '挑战', data: rtData.chal, color: '#f59e0b' },
-            ]}
-          />
+          {rtData.req.length > 0 ? (
+            <AreaChart
+              height={280}
+              labels={rtData.req.map((_, i) => `-${rtData.req.length - i}m`)}
+              series={[
+                { label: '通过', data: rtData.req, color: '#22d3ee' },
+                { label: '拦截', data: rtData.block, color: '#ef4444' },
+                { label: '挑战', data: rtData.chal, color: '#f59e0b' },
+              ]}
+            />
+          ) : (
+            <div className="muted fs-13" style={{ padding: 60, textAlign: 'center' }}>
+              所选窗口内暂无攻击流量
+            </div>
+          )}
         </Card>
 
-        <Card title="攻击类型 TOP" ico="crosshair" meta="实时">
-          <BarChartH data={top5} height={260} />
+        <Card title="攻击类型 TOP" ico="crosshair" meta="近 24h">
+          {top5.length > 0 ? (
+            <BarChartH data={top5} height={260} />
+          ) : (
+            <div className="muted fs-13" style={{ padding: 40, textAlign: 'center' }}>
+              暂无攻击类型数据
+            </div>
+          )}
         </Card>
       </div>
 
@@ -259,7 +306,8 @@ export default function PageMonitor() {
       </Card>
 
       <div className="row r-1-1 mt-4">
-        <Card title="集群资源监控" ico="cpu" meta="近 1h">
+        {/* CPU/内存/带宽需 agent 高频上报 monitor_metrics（管道未实现），暂为示意值 */}
+        <Card title="集群资源监控" ico="cpu" meta="示意 · 待接 agent 指标">
           <div className="row r-3 gap-3">
             {[
               { label: 'CPU 平均', value: 38, color: '#a855f7' },
@@ -272,7 +320,8 @@ export default function PageMonitor() {
             ))}
           </div>
         </Card>
-        <Card title="近 24 小时告警分布" ico="alert" meta="按级别">
+        {/* 告警分布需 alert_events 按小时聚合端点（未实现），暂为示意 */}
+        <Card title="近 24 小时告警分布" ico="alert" meta="示意 · 待接告警聚合">
           <BarsVertical
             height={210}
             data={[

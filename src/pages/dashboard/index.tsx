@@ -4,6 +4,26 @@ import { AreaChart, BarChartH, Donut, Heatmap, Radar } from '@/components/charts
 import { AttackGlobe, type AttackGlobeHandle } from '@/components/globe/AttackGlobe'
 import { INSTANCES, mkAttack, type AttackEvent } from '@/mocks/nebula'
 import * as logApi from '@/api/live/log'
+import * as monitorApi from '@/api/live/monitor'
+
+// 数字格式化：大数转 K/M，给 KPI 卡用。
+function fmtCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(Math.round(n))
+}
+
+// 后端 heatmap[dow][hour]，dow 0=周日..6=周六；前端行序是 周一..周日。
+// 这里把后端矩阵重排成前端期望的行序。
+function remapHeatmap(matrix: number[][]): number[][] {
+  if (!matrix || matrix.length < 7) return matrix ?? []
+  // 周一(后端1) 周二(2) 周三(3) 周四(4) 周五(5) 周六(6) 周日(0)
+  const order = [1, 2, 3, 4, 5, 6, 0]
+  return order.map(d => matrix[d] ?? new Array(24).fill(0))
+}
+
+const TYPE_FALLBACK_COLORS = ['#ef4444', '#f59e0b', '#ec4899', '#a855f7', '#22d3ee', '#5d556e']
+const SOURCE_BAR_COLORS = ['#ec4899', '#a855f7', '#22d3ee', '#f59e0b', '#ef4444', '#a855f7']
 
 const HEATMAP_ROW_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 const HEATMAP_COL_LABELS = Array.from({ length: 24 }, (_, i) => `${i}h`)
@@ -41,78 +61,76 @@ export default function PageDashboard() {
     return () => clearInterval(id)
   }, [])
 
-  const sparkAttack = useMemo(() => Array.from({ length: 24 }, () => 60 + Math.random() * 140), [])
-  const sparkReq = useMemo(() => Array.from({ length: 24 }, () => 800 + Math.random() * 400), [])
-  const sparkLatency = useMemo(() => Array.from({ length: 24 }, () => 18 + Math.random() * 12), [])
-  const sparkBlock = useMemo(() => Array.from({ length: 24 }, () => 30 + Math.random() * 80), [])
+  // 真聚合数据：/monitor/dashboard 一次拉 KPI + TOP + 类型分布 + 7×24 热力图。
+  // 拉失败时各块回退到空，UI 不空白（sparkline 给 0 数组）。
+  const [dash, setDash] = useState<monitorApi.DashboardSnapshot | null>(null)
+  const [dashError, setDashError] = useState<string | null>(null)
+  const [windowSel, setWindowSel] = useState<'24h' | '7d' | '30d'>('24h')
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const d = await monitorApi.fetchDashboard(windowSel)
+        if (!cancelled) {
+          setDash(d)
+          setDashError(null)
+        }
+      } catch (e: unknown) {
+        if (!cancelled) setDashError(e instanceof Error ? e.message : String(e))
+      }
+    }
+    load()
+    const id = setInterval(load, 30_000) // 30s 刷新
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [windowSel])
+
+  const kpi = dash?.kpi
+  const sparkAttack = kpi?.sparkBlocked?.length ? kpi.sparkBlocked : new Array(24).fill(0)
+  const sparkReq = kpi?.sparkRequests?.length ? kpi.sparkRequests : new Array(24).fill(0)
+  const sparkLatency = kpi?.sparkLatency?.length ? kpi.sparkLatency : new Array(24).fill(0)
+  const sparkBlock = kpi?.sparkBlockRate?.length ? kpi.sparkBlockRate : new Array(24).fill(0)
+  const sparkAlerts = kpi?.sparkAlerts?.length ? kpi.sparkAlerts : new Array(24).fill(0)
 
   const trendLabels = useMemo(
     () => Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}:00`),
     [],
   )
-  const trendBlocked = useMemo(
-    () =>
-      Array.from({ length: 24 }, (_, i) =>
-        Math.floor(200 + Math.sin(i / 3) * 80 + Math.random() * 100),
-      ),
-    [],
-  )
-  const trendPassed = useMemo(
-    () =>
-      Array.from({ length: 24 }, (_, i) =>
-        Math.floor(3000 + Math.cos(i / 4) * 800 + Math.random() * 600),
-      ),
-    [],
-  )
+  const trendBlocked = sparkAttack
+  const trendPassed = sparkReq
 
-  const attackBreakdown = [
-    { label: 'SQL 注入', value: 35, color: '#ef4444' },
-    { label: 'CC 攻击', value: 22, color: '#f59e0b' },
-    { label: 'XSS', value: 16, color: '#ec4899' },
-    { label: '恶意 Bot', value: 12, color: '#a855f7' },
-    { label: 'API 滥用', value: 8, color: '#22d3ee' },
-    { label: '其他', value: 7, color: '#5d556e' },
-  ]
+  const attackBreakdown = useMemo(() => {
+    const types = dash?.attackTypes ?? []
+    if (types.length === 0) return [{ label: '暂无数据', value: 1, color: '#5d556e' }]
+    return types.map((t, i) => ({
+      label: t.label,
+      value: t.count,
+      color: t.color || TYPE_FALLBACK_COLORS[i % TYPE_FALLBACK_COLORS.length],
+    }))
+  }, [dash])
 
-  const topSources = [
-    { label: '美国 弗吉尼亚', value: 12420, color: '#ec4899' },
-    { label: '俄罗斯 莫斯科', value: 10180, color: '#a855f7' },
-    { label: '荷兰 阿姆斯特丹', value: 7320, color: '#22d3ee' },
-    { label: '越南 河内', value: 5240, color: '#f59e0b' },
-    { label: '巴西 圣保罗', value: 3850, color: '#ef4444' },
-    { label: '伊朗 德黑兰', value: 2740, color: '#a855f7' },
-  ]
+  const topSources = useMemo(() => {
+    const srcs = dash?.topSources ?? []
+    return srcs.map((s, i) => ({
+      label: `${s.country} · ${s.srcIp}`,
+      value: s.count,
+      color: SOURCE_BAR_COLORS[i % SOURCE_BAR_COLORS.length],
+    }))
+  }, [dash])
 
-  const heatmap = useMemo(
-    () =>
-      Array.from({ length: 7 }, (_, d) =>
-        Array.from({ length: 24 }, (_, h) => {
-          const base = h > 8 && h < 22 ? 60 : 20
-          const burst = d === 2 && h === 14 ? 90 : 0
-          return Math.floor(base + burst + Math.random() * 50)
-        }),
-      ),
-    [],
-  )
+  const heatmap = useMemo(() => remapHeatmap(dash?.heatmap ?? []), [dash])
 
   const radarSeries = [
     { label: '本月', data: [88, 76, 92, 81, 70, 96], color: '#a855f7' },
     { label: '上月', data: [80, 68, 84, 72, 66, 94], color: '#22d3ee' },
   ]
 
-  const [events, setEvents] = useState<AttackEvent[]>(() =>
-    Array.from({ length: 7 }, () => mkAttack()),
-  )
-  useEffect(() => {
-    const id = setInterval(() => {
-      setEvents(prev => [mkAttack(), ...prev].slice(0, 7))
-    }, 2200)
-    return () => clearInterval(id)
-  }, [])
-
-  // 地球攻击轨迹：用真实攻击日志的 lat/lng/country 作为数据源。
-  // 拉最近 500 条 → 前端按 country 聚合给国家级柱子，单点照样保留。
-  // 拉失败/没数据时回退到 mkAttack() mock 让球面也别空着。
+  // 实时拦截事件 + 地球攻击轨迹共用同一份真实攻击日志（拉最近 500 条）。
+  // 事件表取最新 7 条；球面拿全部聚合。拉失败/空时回退 mkAttack 让 UI 不空。
+  const [events, setEvents] = useState<AttackEvent[]>([])
   const [globeAttacks, setGlobeAttacks] = useState<AttackEvent[]>([])
   useEffect(() => {
     let cancelled = false
@@ -121,12 +139,19 @@ export default function PageDashboard() {
         const { items } = await logApi.listAttackLogs({ pageSize: 500 })
         if (cancelled) return
         if (items.length === 0) {
-          setGlobeAttacks(Array.from({ length: 50 }, () => mkAttack()))
+          const fallback = Array.from({ length: 50 }, () => mkAttack())
+          setGlobeAttacks(fallback)
+          setEvents(fallback.slice(0, 7))
         } else {
           setGlobeAttacks(items)
+          setEvents(items.slice(0, 7))
         }
       } catch {
-        if (!cancelled) setGlobeAttacks(Array.from({ length: 50 }, () => mkAttack()))
+        if (!cancelled) {
+          const fallback = Array.from({ length: 50 }, () => mkAttack())
+          setGlobeAttacks(fallback)
+          setEvents(fallback.slice(0, 7))
+        }
       }
     }
     load()
@@ -157,7 +182,11 @@ export default function PageDashboard() {
           </p>
         </div>
         <div className="actions">
-          <select className="select" defaultValue="24h">
+          <select
+            className="select"
+            value={windowSel}
+            onChange={e => setWindowSel(e.target.value as '24h' | '7d' | '30d')}
+          >
             <option value="24h">近 24 小时</option>
             <option value="7d">近 7 天</option>
             <option value="30d">近 30 天</option>
@@ -173,57 +202,63 @@ export default function PageDashboard() {
         </div>
       </div>
 
+      {dashError && (
+        <div
+          className="mb-3"
+          style={{
+            padding: '8px 12px',
+            background: 'rgba(244,63,94,.10)',
+            border: '1px solid rgba(244,63,94,.35)',
+            borderRadius: 8,
+            color: 'var(--danger)',
+            fontSize: 13,
+          }}
+        >
+          指标加载失败：{dashError}（显示为占位 0，请检查 waf-control 是否在线）
+        </div>
+      )}
+
       <div className="kpi-grid c5">
         <KPI
           label="今日拦截攻击"
-          value="84,620"
+          value={(kpi?.blockedToday ?? 0).toLocaleString()}
           ico="shield"
           kind="danger"
-          delta="+12.4%"
-          deltaDir="up"
           sparkData={sparkAttack}
           sparkColor="#ef4444"
         />
         <KPI
           label="今日总请求"
-          value="2.84M"
+          value={fmtCompact(kpi?.totalRequestsToday ?? 0)}
           ico="activity"
           kind="brand"
-          delta="+3.1%"
-          deltaDir="up"
           sparkData={sparkReq}
           sparkColor="#a855f7"
         />
         <KPI
           label="平均响应延迟"
-          value="24"
+          value={String(Math.round(kpi?.avgLatencyMs ?? 0))}
           unit="ms"
           ico="pulse"
           kind="info"
-          delta="-2.0ms"
-          deltaDir="down"
           sparkData={sparkLatency}
           sparkColor="#22d3ee"
         />
         <KPI
           label="拦截/挑战率"
-          value="2.98"
+          value={(kpi?.blockedRatePct ?? 0).toFixed(2)}
           unit="%"
           ico="crosshair"
           kind="warn"
-          delta="+0.4pp"
-          deltaDir="up"
           sparkData={sparkBlock}
           sparkColor="#f59e0b"
         />
         <KPI
           label="活跃高危告警"
-          value="3"
+          value={String(kpi?.activeHighAlerts ?? 0)}
           ico="alert"
           kind="ok"
-          delta="-2"
-          deltaDir="down"
-          sparkData={[1, 2, 3, 4, 3, 3, 3]}
+          sparkData={sparkAlerts}
           sparkColor="#10b981"
         />
       </div>
@@ -257,18 +292,24 @@ export default function PageDashboard() {
         </Card>
 
         <div className="stack">
-          <Card title="攻击类型分布" ico="crosshair" meta="近 1h">
+          <Card title="攻击类型分布" ico="crosshair" meta="近 24h">
             <Donut
               data={attackBreakdown}
               size={150}
               thickness={20}
-              centerValue="84.6K"
+              centerValue={fmtCompact(kpi?.blockedToday ?? 0)}
               centerLabel="次拦截"
             />
           </Card>
 
-          <Card title="威胁源 TOP 6" ico="globe" meta="GeoIP">
-            <BarChartH data={topSources} height={180} />
+          <Card title="威胁源 TOP 6" ico="globe" meta="GeoIP · 近 24h">
+            {topSources.length > 0 ? (
+              <BarChartH data={topSources} height={180} />
+            ) : (
+              <div className="muted fs-12" style={{ padding: 24, textAlign: 'center' }}>
+                暂无攻击来源数据
+              </div>
+            )}
           </Card>
         </div>
       </div>
