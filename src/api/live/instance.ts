@@ -37,6 +37,7 @@ interface BackendInstance {
   network_io: string
   memory_total: number
   disk_total: number
+  engine?: string
   last_seen: string
 }
 
@@ -142,6 +143,7 @@ function adaptInstance(b: BackendInstance, clusterByNode: Map<string, string>): 
     tp: b.network_io || '—',
     state: mapStatus(b.status),
     uptime: deriveUptime(b.last_seen),
+    engine: b.engine || 'nginx',
   }
 }
 

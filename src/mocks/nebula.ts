@@ -36,6 +36,7 @@ export interface Instance {
   tp: string
   state: 'online' | 'busy' | 'offline'
   uptime: string
+  engine?: string // 后端引擎：nginx / openresty / safeline
 }
 
 export interface Cluster {

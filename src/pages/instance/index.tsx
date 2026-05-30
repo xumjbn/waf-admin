@@ -356,6 +356,7 @@ function InstancesPage() {
                 <th>实例</th>
                 <th>IP</th>
                 <th>集群</th>
+                <th>引擎</th>
                 <th>CPU</th>
                 <th>内存</th>
                 <th>连接数</th>
@@ -380,6 +381,15 @@ function InstancesPage() {
                   </td>
                   <td className="mono">{i.ip}</td>
                   <td className="muted">{i.cluster}</td>
+                  <td>
+                    <Tag kind={i.engine === 'safeline' ? 'pink' : i.engine === 'openresty' ? 'warn' : 'info'}>
+                      {i.engine === 'openresty'
+                        ? 'OpenResty'
+                        : i.engine === 'safeline'
+                          ? '雷池'
+                          : 'NGINX'}
+                    </Tag>
+                  </td>
                   <td>
                     <Bar
                       value={i.cpu}
